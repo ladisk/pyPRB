@@ -1,0 +1,411 @@
+"""
+Core classes for rotor balancing calculations.
+
+Based on "Static and Dynamic Balancing using portable measuring equipment"
+by John Vaughan, Brüel & Kjær.
+"""
+
+import numpy as np
+from tabulate import tabulate
+
+
+class VibrationVector:
+    """Represents a vibration vector in 2D space.
+    
+    A vibration vector is characterized by an amplitude and phase angle,
+    which can be used to represent unbalance in rotating machinery.
+    
+    Parameters
+    ----------
+    amplitude : float
+        The magnitude of the vibration vector.
+    phase : float
+        The phase angle in degrees.
+    
+    Examples
+    --------
+    >>> v1 = VibrationVector(10.5, 45)
+    >>> v2 = VibrationVector(5.2, 135)
+    >>> v3 = v1 + v2
+    >>> print(v3)
+    VibrationVector(amplitude=11.7171, phase=71.3464°)
+    """
+
+    def __init__(self, amplitude: float, phase: float):
+        """Initialize the vibration vector with amplitude and phase (in degrees)."""
+        if amplitude < 0:
+            raise ValueError("Amplitude must be non-negative.")
+        
+        self.amplitude = amplitude
+        self.phase = phase % 360
+        self.complex_num = amplitude * np.exp(1j * np.deg2rad(self.phase))
+
+    @classmethod
+    def from_complex(cls, z: complex) -> 'VibrationVector':
+        """Create a VibrationVector from a complex number.
+        
+        Parameters
+        ----------
+        z : complex
+            Complex number representation of the vector.
+            
+        Returns
+        -------
+        VibrationVector
+            A new VibrationVector instance.
+        """
+        amplitude = np.abs(z)
+        phase = np.rad2deg(np.angle(z))
+        return cls(amplitude, phase)
+
+    def __repr__(self) -> str:
+        return f'VibrationVector(amplitude={self.amplitude:g}, phase={self.phase:g}°)'
+
+    def __add__(self, other: 'VibrationVector') -> 'VibrationVector':
+        """Add two vibration vectors."""
+        z1 = self.complex_num
+        z2 = other.complex_num
+        z_sum = z1 + z2
+        return VibrationVector.from_complex(z_sum)
+
+    def __sub__(self, other: 'VibrationVector') -> 'VibrationVector':
+        """Subtract two vibration vectors."""
+        z1 = self.complex_num
+        z2 = other.complex_num
+        z_diff = z1 - z2
+        return VibrationVector.from_complex(z_diff)
+
+    def __mul__(self, other: 'float | VibrationVector') -> 'VibrationVector':
+        """Multiply vibration vector by scalar or another vector."""
+        if isinstance(other, (int, float)):
+            if other >= 0:
+                return VibrationVector(self.amplitude * other, self.phase)
+            elif other < 0:
+                return VibrationVector(self.amplitude * (-other),
+                                       self.phase + 180)
+        elif isinstance(other, VibrationVector):
+            z1 = self.complex_num
+            z2 = other.complex_num
+            z_prod = z1 * z2
+            return VibrationVector.from_complex(z_prod)
+        else:
+            return NotImplemented
+
+    def __rmul__(self, other: float) -> 'VibrationVector':
+        """Right multiplication (allows scalar * vector)."""
+        return self.__mul__(other)
+
+    def __truediv__(self, other: 'float | VibrationVector') -> 'VibrationVector':
+        """Divide vibration vector by scalar or another vector."""
+        if isinstance(other, (int, float)):
+            if other > 0:
+                return VibrationVector(self.amplitude / other, self.phase)
+            elif other < 0:
+                return VibrationVector(self.amplitude / (-other),
+                                       self.phase + 180)
+            else:
+                raise ZeroDivisionError("division by zero")
+        elif isinstance(other, VibrationVector):
+            z1 = self.complex_num
+            z2 = other.complex_num
+            z_div = z1 / z2
+            return VibrationVector.from_complex(z_div)
+        else:
+            return NotImplemented
+
+    def __neg__(self) -> 'VibrationVector':
+        """Negate the vibration vector (180° phase shift)."""
+        return VibrationVector(self.amplitude, self.phase + 180)
+
+
+class StaticBalancing:
+    """Performs static (single-plane) balancing calculations.
+    
+    Static balancing is used when the rotor can be treated as having all
+    its mass in a single plane, such as narrow disks, flywheels, or grindstones.
+    
+    Parameters
+    ----------
+    V_0 : VibrationVector
+        Initial vibration measurement (no trial mass).
+    V_1 : VibrationVector
+        Vibration measurement with trial mass attached.
+    mass : float
+        Trial mass used (in grams or other consistent units).
+        
+    Examples
+    --------
+    >>> V_0 = VibrationVector(3.4, 116)
+    >>> V_1 = VibrationVector(1.8, 42)
+    >>> balancer = StaticBalancing(V_0, V_1, mass=2.0)
+    >>> compensation_mass, angle = balancer.compute_compensation()
+    Compensation mass: 2.01 g at position -30.8° from the trial mass.
+    """
+
+    def __init__(self, V_0: VibrationVector, V_1: VibrationVector, mass: float):
+        if mass <= 0:
+            raise ValueError("Trial mass must be positive.")
+        self.V_0 = V_0
+        self.V_1 = V_1
+        self.mass = mass
+
+    def __repr__(self) -> str:
+        """Return a formatted table representation of the balancing data.
+        """
+        # Create data rows
+        data = [[
+            "None", f"{self.V_0.amplitude:g}", f"{self.V_0.phase:g}°", "V_0"
+        ],
+                [
+                    f"{self.mass:.1f} g", f"{self.V_1.amplitude:g}",
+                    f"{self.V_1.phase:g}°", "V_1"
+                ]]
+
+        # Column headers
+        headers = ["Trial Mass", "Amplitude", "Phase", "Vector"]
+
+        # Generate table similar to B&K document
+        table = tabulate(data,
+                         headers=headers,
+                         tablefmt="grid",
+                         stralign="center",
+                         numalign="center")
+
+        # Add title
+        title = "Static Balancing - Measured Vibration Data"
+        separator = "=" * 80
+
+        return f"\n{separator}\n{title}\n{separator}\n{table}\n{separator}"
+
+    def _compute_V_T(self) -> VibrationVector:
+        """Compute the effect of the trial mass.
+        
+        Returns
+        -------
+        VibrationVector
+            The vibration vector caused by the trial mass alone.
+        """
+        V_T = self.V_1 - self.V_0
+        self.V_T = V_T
+        return V_T
+
+    def compute_compensation(self, repr: bool = True) -> tuple[float, float]:
+        """Calculate the compensation mass and its angular position.
+        
+        Parameters
+        ----------
+        repr : bool, optional
+            If True, print the compensation details, by default True
+            
+        Returns
+        -------
+        compensation_mass : float
+            Compensating mass (same units as input mass).
+        position : float
+            Angular position of the compensation mass in degrees (-180° to +180°)
+            relative to the trial mass position.
+        """
+        V_T = self._compute_V_T()
+        compensation_mass = self.V_0.amplitude / V_T.amplitude * self.mass
+        position = -V_T.phase + self.V_0.phase + 180
+        compensation_vector = VibrationVector(amplitude=compensation_mass,
+                                              phase=position)
+        amplitude, phase = compensation_vector.amplitude, compensation_vector.phase
+        if phase > 180:
+            phase -= 360
+        if repr:
+            print(
+                f"Compensation mass: {amplitude:.2f} g at position {phase:.1f}° "
+                "from the trial mass.")
+
+        return amplitude, phase
+
+
+class DynamicBalancing:
+    """Performs dynamic (two-plane) balancing calculations.
+    
+    Dynamic balancing is required for rotors with significant length, where
+    unbalance exists in multiple planes. This class implements the two-plane
+    influence coefficient method.
+    
+    Parameters
+    ----------
+    V_1_0 : VibrationVector
+        Plane 1 vibration, initial run (no trial masses).
+    V_2_0 : VibrationVector
+        Plane 2 vibration, initial run (no trial masses).
+    V_1_1 : VibrationVector
+        Plane 1 vibration with trial mass in plane 1.
+    V_2_1 : VibrationVector
+        Plane 2 vibration with trial mass in plane 1.
+    V_1_2 : VibrationVector
+        Plane 1 vibration with trial mass in plane 2.
+    V_2_2 : VibrationVector
+        Plane 2 vibration with trial mass in plane 2.
+    mass_1_1 : float
+        Trial mass used in plane 1 (grams or consistent units).
+    mass_2_2 : float
+        Trial mass used in plane 2 (grams or consistent units).
+        
+    Notes
+    -----
+    The naming convention V_i_j represents:
+    - i: measurement plane (1 or 2)
+    - j: run number (0=initial, 1=trial mass in plane 1, 2=trial mass in plane 2)
+    
+    Examples
+    --------
+    >>> # Initial measurements
+    >>> V_1_0 = VibrationVector(7.2, 238)
+    >>> V_2_0 = VibrationVector(13.5, 296)
+    >>> # With trial mass in plane 1
+    >>> V_1_1 = VibrationVector(4.9, 114)
+    >>> V_2_1 = VibrationVector(9.2, 347)
+    >>> # With trial mass in plane 2
+    >>> V_1_2 = VibrationVector(4.0, 79)
+    >>> V_2_2 = VibrationVector(12.0, 292)
+    >>> 
+    >>> balancer = DynamicBalancing(V_1_0, V_2_0, V_1_1, V_2_1, 
+    ...                             V_1_2, V_2_2, mass_1_1=2.5, mass_2_2=2.5)
+    >>> results = balancer.compute_compensation()
+    Plane 1: Compensation mass: 2.95 g at position 50.2° from the trial mass.
+    Plane 2: Compensation mass: 2.84 g at position -81.9° from the trial mass.
+    """
+
+    def __init__(self, V_1_0: VibrationVector, V_2_0: VibrationVector,
+                 V_1_1: VibrationVector, V_2_1: VibrationVector,
+                 V_1_2: VibrationVector, V_2_2: VibrationVector,
+                 mass_1_1: float, mass_2_2: float):
+        if mass_1_1 <= 0 or mass_2_2 <= 0:
+            raise ValueError("Trial mass must be positive.")
+        self.V_1_0 = V_1_0
+        self.V_2_0 = V_2_0
+        self.V_1_1 = V_1_1
+        self.V_2_1 = V_2_1
+        self.V_1_2 = V_1_2
+        self.V_2_2 = V_2_2
+        self.mass_1_1 = mass_1_1
+        self.mass_2_2 = mass_2_2
+
+    def __repr__(self) -> str:
+        """Return a formatted table representation of the balancing data.
+        """
+        # Create data rows
+        data = [
+            [
+                "None", f"{self.V_1_0.amplitude:g}", f"{self.V_1_0.phase:g}°",
+                "V_1_0", f"{self.V_2_0.amplitude:g}", f"{self.V_2_0.phase:g}°",
+                "V_2_0"
+            ],
+            [
+                f"{self.mass_1_1:g} g on Plane 1", f"{self.V_1_1.amplitude:g}",
+                f"{self.V_1_1.phase:g}°", "V_1_1", f"{self.V_2_1.amplitude:g}",
+                f"{self.V_2_1.phase:g}°", "V_2_1"
+            ],
+            [
+                f"{self.mass_2_2:g} g on Plane 2", f"{self.V_1_2.amplitude:g}",
+                f"{self.V_1_2.phase:g}°", "V_1_2", f"{self.V_2_2.amplitude:g}",
+                f"{self.V_2_2.phase:g}°", "V_2_2"
+            ],
+        ]
+
+        # Column headers
+        headers = [
+            "Trial Mass\nSize and Location", "Amplitude\n(Plane 1)",
+            "Phase\n(Plane 1)", "Vector", "Amplitude\n(Plane 2)",
+            "Phase\n(Plane 2)", "Vector"
+        ]
+
+        # Generate table similar to B&K document
+        table = tabulate(data,
+                         headers=headers,
+                         tablefmt="grid",
+                         stralign="center",
+                         numalign="center")
+
+        # Add title
+        title = "Dynamic Balancing - Measured Vibration Data"
+        separator = "=" * 80
+
+        return f"\n{separator}\n{title}\n{separator}\n{table}\n{separator}"
+
+    def _compute_Q1(self) -> VibrationVector:
+        """Calculate the influence coefficient Q1 for plane 1.
+        
+        Returns
+        -------
+        VibrationVector
+            The Q1 influence coefficient vector.
+        """
+        A = self.V_1_1 - self.V_1_0
+        B = self.V_1_2 - self.V_1_0
+        C = self.V_2_1 - self.V_2_0
+        D = self.V_2_2 - self.V_2_0
+
+        Q1 = (B * self.V_2_0 - D * self.V_1_0) / (A * D - B * C)
+        return Q1
+
+    def _compute_Q2(self) -> VibrationVector:
+        """Calculate the influence coefficient Q2 for plane 2.
+        
+        Returns
+        -------
+        VibrationVector
+            The Q2 influence coefficient vector.
+        """
+        A = self.V_1_1 - self.V_1_0
+        B = self.V_1_2 - self.V_1_0
+        C = self.V_2_1 - self.V_2_0
+        D = self.V_2_2 - self.V_2_0
+
+        Q2 = (-A * self.V_2_0 + C * self.V_1_0) / (A * D - B * C)
+        return Q2
+
+    def compute_compensation(self,
+                             repr: bool = True
+                            ) -> tuple[float, float, float, float]:
+        """Calculate compensating masses and positions for both planes.
+            
+        Parameters
+        ----------
+        repr : bool, optional
+            If True, print the compensation details, by default True
+
+        Returns
+        -------
+        compensation_mass_1 : float
+            Compensating mass for plane 1 (same units as input masses).
+        position_1 : float
+            Angular position of the compensating mass for plane 1 in degrees 
+            (-180° to +180°) relative to the position of trial mass in plane 1.
+        compensation_mass_2 : float
+            Compensating mass for plane 2 (same units as input masses).
+        position_2 : float
+            Angular position of the compensating mass for plane 2 in degrees 
+            (-180° to +180°) relative to the position of trial mass in plane 2.
+        """
+        Q1 = self._compute_Q1()
+        Q2 = self._compute_Q2()
+
+        compensation_mass_1 = Q1.amplitude * self.mass_1_1
+        position_1 = Q1.phase
+        if position_1 > 180:
+            position_1 -= 360
+
+        compensation_mass_2 = Q2.amplitude * self.mass_2_2
+        position_2 = Q2.phase
+        if position_2 > 180:
+            position_2 -= 360
+
+        if repr:
+            data = [["1", f"{compensation_mass_1:.2f} g", f"{position_1:.1f}°"],
+                    ["2", f"{compensation_mass_2:.2f} g", f"{position_2:.1f}°"]]
+            headers = ["Plane", "Compensation Mass", "Position"]
+            table = tabulate(data,
+                             headers=headers,
+                             tablefmt="grid",
+                             stralign="center",
+                             numalign="center")
+            print(table)
+
+        return compensation_mass_1, position_1, compensation_mass_2, position_2

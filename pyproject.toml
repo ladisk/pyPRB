@@ -1,0 +1,71 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "pyPRB"
+version = "0.1.0"
+authors = [{name = "Gašper Krivic", email = "gasper.krivic@fs.uni-lj.si"}]
+maintainers = [{name = "Gašper Krivic", email = "gasper.krivic@fs.uni-lj.si"}]
+license = "MIT"
+description = "Static and dynamic rotor balancing using portable measurement equipment calculations based on Brüel & Kjær guide."
+readme = "README.rst"
+keywords = ["rotor", "balancing", "vibration", "dynamics", "mechanical-engineering"]
+requires-python = ">=3.9"
+
+# Dependency management (these must be installed for the package to work)
+dependencies = [
+    "numpy>=1.20.0",
+    "tabulate>=0.8.0",
+]
+
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Science/Research",
+    "Topic :: Scientific/Engineering",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
+    "License :: OSI Approved :: MIT License",
+]
+
+# Optional dependencies (can be installed with `pip install pyPRB[dev]`).
+# Can add as many as you want, but they must be listed in the `optional-dependencies` section.
+[project.optional-dependencies]
+dev = [
+    "sphinx",
+    "twine",
+    "wheel",
+    "pytest",
+    "build",
+    "sphinx-rtd-theme",
+    "sphinx-copybutton>=0.5.2",
+]
+
+[project.urls]
+homepage = "https://github.com/ladisk/pyPRB"
+documentation = "https://github.com/ladisk/pyPRB"
+source = "https://github.com/ladisk/pyPRB"
+
+# Define the files that are included in the wheel
+[tool.hatch.build.targets.wheel]
+packages = ["pyPRB"]
+
+# Define the files that are included in the source distribution (tar.gz)
+[tool.hatch.build.targets.sdist]
+include = [
+    "pyPRB/**/*.py",
+    "README.rst",
+    "LICENSE",
+    "requirements.txt",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+python_classes = ["Test*"]
+python_functions = ["test_*"]

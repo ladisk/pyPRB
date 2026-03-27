@@ -14,6 +14,16 @@ VibrationVector
    :show-inheritance:
 
 
+MassVector
+----------
+
+.. autoclass:: pyPRB.MassVector
+   :members:
+   :special-members: __init__, __repr__
+   :undoc-members:
+   :show-inheritance:
+
+
 StaticBalancing
 ---------------
 

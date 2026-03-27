@@ -8,6 +8,7 @@ Features
 --------
 
 * **VibrationVector**: Represents unbalance by means of a vector
+* **MassVector**: Represents a mass placed at an angular position on a rotor
 * **StaticBalancing**: Single-plane balancing for rotors
 * **DynamicBalancing**: Two-plane balancing for rotors
 
@@ -43,21 +44,24 @@ Static Balancing Example
 
 .. code-block:: python
 
-    from pyPRB import VibrationVector, StaticBalancing
+    from pyPRB import VibrationVector, MassVector, StaticBalancing
 
     # Initial measurements
     V_0 = VibrationVector(amplitude=3.4, phase=116)  # No trial mass
-    V_1 = VibrationVector(amplitude=1.8, phase=42)   # With 2.0 g trial mass
+    V_1 = VibrationVector(amplitude=1.8, phase=42)   # With trial mass
+
+    # Trial mass: 2.0 g mounted at 0° on the rotor
+    trial_mass = MassVector(2.0, 0.0)
 
     # Create balancer
-    balancer = StaticBalancing(V_0, V_1, mass=2.0)
+    balancer = StaticBalancing(V_0, V_1, trial_mass=trial_mass)
 
     # Display measurement table
     print(balancer)
 
     # Compute compensation
-    compensation_mass, angle = balancer.compute_compensation()
-    # Output: Compensation mass: 2.01 g at position -30.8° from the trial mass.
+    comp_mass = balancer.compute_compensation()
+    # Output: Compensation mass: 2.01 g at position -30.8° on the rotor.
 
 
 Dynamic Balancing Example
@@ -65,7 +69,7 @@ Dynamic Balancing Example
 
 .. code-block:: python
 
-    from pyPRB import VibrationVector, DynamicBalancing
+    from pyPRB import VibrationVector, MassVector, DynamicBalancing
 
     # Initial measurements (no trial masses)
     V_1_0 = VibrationVector(7.2, 238)   # Plane 1
@@ -79,24 +83,28 @@ Dynamic Balancing Example
     V_1_2 = VibrationVector(4.0, 79)    # Plane 1
     V_2_2 = VibrationVector(12.0, 292)  # Plane 2
 
+    # Trial masses: 2.5 g each, mounted at 0° on their respective planes
+    trial_mass_1 = MassVector(2.5, 0.0)
+    trial_mass_2 = MassVector(2.5, 0.0)
+
     # Create balancer
     balancer = DynamicBalancing(
         V_1_0, V_2_0, V_1_1, V_2_1, V_1_2, V_2_2,
-        mass_1_1=2.5, mass_2_2=2.5
+        trial_mass_1=trial_mass_1, trial_mass_2=trial_mass_2
     )
 
     # Display measurement table
     print(balancer)
 
     # Compute compensations for both planes
-    m1, a1, m2, a2 = balancer.compute_compensation()
-    # Output: 
+    comp_mass_1, comp_mass_2 = balancer.compute_compensation()
+    # Output:
     # +---------+---------------------+------------+
     # |  Plane  |  Compensation Mass  |  Position  |
     # +=========+=====================+============+
-    # |    1    |       1.98 g        |  -123.8°   |
+    # |    1    |       2.95 g        |   50.2°    |
     # +---------+---------------------+------------+
-    # |    2    |       1.07 g        |   121.8°   |
+    # |    2    |       2.84 g        |   -81.9°   |
     # +---------+---------------------+------------+
 
 

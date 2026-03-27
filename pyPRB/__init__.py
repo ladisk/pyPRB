@@ -3,17 +3,20 @@ Rotor Balancing Package
 =======================
 
 A Python package for static and dynamic rotor balancing calculations based on
-the influence coefficient method described in "Static and Dynamic Balancing 
-using portable measuring equipment" by John Vaughan, Brüel & Kjær.
+the influence coefficient method described in "Static and Dynamic Balancing
+using portable measuring equipment" by John Vaughan, Bruel & Kjaer.
 
 Classes
 -------
 VibrationVector
     Represents vibration measurements as vectors with amplitude and phase.
-    
+
+MassVector
+    Represents a mass placed at an angular position on a rotor.
+
 StaticBalancing
     Performs single-plane (static) balancing calculations.
-    
+
 DynamicBalancing
     Performs two-plane (dynamic) balancing calculations.
 
@@ -21,33 +24,39 @@ Examples
 --------
 Static balancing:
 
->>> from pyPRB import VibrationVector, StaticBalancing
+>>> from pyPRB import VibrationVector, MassVector, StaticBalancing
 >>> V_0 = VibrationVector(3.4, 116)  # initial vibration vector
 >>> V_1 = VibrationVector(1.8, 42)  # vibration vector after trial mass
->>> balancer = StaticBalancing(V_0, V_1, mass=2.0)
->>> compensation_mass, position = balancer.compute_compensation()
+>>> trial_mass = MassVector(2.0, 0.0)
+>>> balancer = StaticBalancing(V_0, V_1, trial_mass=trial_mass)
+>>> comp_mass = balancer.compute_compensation()
 
 Dynamic balancing:
 
->>> from pyPRB import VibrationVector, DynamicBalancing
+>>> from pyPRB import VibrationVector, MassVector, DynamicBalancing
 >>> V_1_0 = VibrationVector(7.2, 238)
 >>> V_2_0 = VibrationVector(13.5, 296)
 >>> V_1_1 = VibrationVector(4.9, 114)
 >>> V_2_1 = VibrationVector(9.2, 347)
 >>> V_1_2 = VibrationVector(4.0, 79)
 >>> V_2_2 = VibrationVector(12.0, 292)
+>>> trial_mass_1 = MassVector(2.5, 0.0)
+>>> trial_mass_2 = MassVector(2.5, 0.0)
 >>> balancer = DynamicBalancing(V_1_0, V_2_0, V_1_1, V_2_1,
-...                             V_1_2, V_2_2, mass_1_1=2.5, mass_2_2=2.5)
->>> results = balancer.compute_compensation()
+...                             V_1_2, V_2_2,
+...                             trial_mass_1=trial_mass_1,
+...                             trial_mass_2=trial_mass_2)
+>>> comp_mass_1, comp_mass_2 = balancer.compute_compensation()
 """
 
-from .core import VibrationVector, StaticBalancing, DynamicBalancing
+from .core import VibrationVector, MassVector, StaticBalancing, DynamicBalancing
 from .__version__ import __version__, __author__, __email__
 
 # Define what gets imported with "from pyPRB import *"
 __all__ = [
     'VibrationVector',
-    'StaticBalancing', 
+    'MassVector',
+    'StaticBalancing',
     'DynamicBalancing',
     '__version__',
 ]

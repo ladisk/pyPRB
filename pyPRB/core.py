@@ -261,7 +261,7 @@ class StaticBalancing:
         Parameters
         ----------
         repr : bool, optional
-            If True, print the compensation details, by default True
+            If ``True``, print the compensation details.  Default is ``True``.
 
         Returns
         -------
@@ -448,7 +448,7 @@ class DynamicBalancing:
         Parameters
         ----------
         repr : bool, optional
-            If True, print the compensation details, by default True
+            If ``True``, print the compensation details.  Default is ``True``.
 
         Returns
         -------

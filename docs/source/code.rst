@@ -42,3 +42,52 @@ DynamicBalancing
    :special-members: __init__, __repr__
    :undoc-members:
    :show-inheritance:
+
+
+Signal Processing
+=================
+
+Pipeline for extracting :class:`~pyPRB.VibrationVector` objects from
+time-domain signals (response + trigger).
+
+Typical workflow:
+
+1. Detect the rotation frequency with :func:`~pyPRB.detect_rotation_freq`.
+2. Create a :class:`~pyPRB.VibrationExtractor` (optionally with a custom
+   :class:`~pyPRB.processing.ExtractionMethod`).
+3. Call :meth:`~pyPRB.VibrationExtractor.get_vibration_vector` for each
+   measurement run.
+
+detect_rotation_freq
+--------------------
+
+.. autofunction:: pyPRB.detect_rotation_freq
+
+
+ExtractionMethod
+----------------
+
+.. autoclass:: pyPRB.processing.ExtractionMethod
+   :members:
+   :undoc-members:
+   :show-inheritance:
+
+
+SynchronousAveraging
+--------------------
+
+.. autoclass:: pyPRB.SynchronousAveraging
+   :members:
+   :special-members: __init__
+   :undoc-members:
+   :show-inheritance:
+
+
+VibrationExtractor
+------------------
+
+.. autoclass:: pyPRB.VibrationExtractor
+   :members:
+   :special-members: __init__
+   :undoc-members:
+   :show-inheritance:

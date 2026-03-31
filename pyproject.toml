@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "pyPRB"
-version = "0.1.0"
+version = "0.9.0"
 authors = [{name = "Gašper Krivic", email = "gasper.krivic@fs.uni-lj.si"}]
 maintainers = [{name = "Gašper Krivic", email = "gasper.krivic@fs.uni-lj.si"}]
 license = "MIT"
@@ -36,13 +36,17 @@ classifiers = [
 # Optional dependencies (can be installed with `pip install pyPRB[dev]`).
 # Can add as many as you want, but they must be listed in the `optional-dependencies` section.
 [project.optional-dependencies]
+plot = [
+    "matplotlib>=3.5.0",
+]
 dev = [
+    "matplotlib>=3.5.0",
     "sphinx",
     "twine",
     "wheel",
     "pytest",
     "build",
-    "sphinx-rtd-theme",
+    "sphinx-book-theme",
     "sphinx-copybutton>=0.5.2",
 ]
 

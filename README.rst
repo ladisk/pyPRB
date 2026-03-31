@@ -11,6 +11,9 @@ Features
 * **MassVector**: Represents a mass placed at an angular position on a rotor
 * **StaticBalancing**: Single-plane balancing for rotors
 * **DynamicBalancing**: Two-plane balancing for rotors
+* **VibrationExtractor**: Extracts vibration vectors from time-domain signals
+* **SynchronousAveraging**: Revolution-locked averaging for fundamental extraction
+* **detect_rotation_freq**: Detects rotation frequency from a trigger signal
 
 Installation
 ------------
@@ -106,6 +109,47 @@ Dynamic Balancing Example
     # +---------+---------------------+------------+
     # |    2    |       2.84 g        |   -81.9°   |
     # +---------+---------------------+------------+
+
+
+Extracting Vibration Vectors from Measurements
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+.. code-block:: python
+
+    import numpy as np
+    from pyPRB import (
+        VibrationExtractor, SynchronousAveraging,
+        detect_rotation_freq, MassVector, StaticBalancing,
+    )
+
+    # Synthetic signals (B&K Example 2)
+    sample_rate = 10000  # Hz
+    f0_true = 25.0       # rotation frequency (Hz)
+    duration = 5.0       # s
+    t = np.arange(0, duration, 1 / sample_rate)
+    rng = np.random.default_rng(0)
+
+    trigger = np.sign(np.sin(2 * np.pi * f0_true * t))
+    signal_run0 = (3.4 * np.cos(2 * np.pi * f0_true * t + np.deg2rad(116))
+                   + 0.05 * rng.standard_normal(len(t)))
+    signal_run1 = (1.8 * np.cos(2 * np.pi * f0_true * t + np.deg2rad(42))
+                   + 0.05 * rng.standard_normal(len(t)))
+
+    # 1. Detect rotation frequency from the trigger signal
+    f0 = detect_rotation_freq(trigger, sample_rate=sample_rate, max_freq=50.0)
+
+    # 2. Create extractor (default method: synchronous averaging)
+    extractor = VibrationExtractor(sample_rate=sample_rate, rotation_freq=f0)
+
+    # 3. Extract vibration vectors for each measurement run
+    V_0 = extractor.get_vibration_vector(signal_run0, trigger)
+    V_1 = extractor.get_vibration_vector(signal_run1, trigger)
+
+    # 4. Use the vectors for balancing
+    trial_mass = MassVector(2.0, 0.0)
+    balancer = StaticBalancing(V_0, V_1, trial_mass=trial_mass)
+    comp_mass = balancer.compute_compensation()
+    # Output: Compensation mass: 2.01 g at position -30.8° on the rotor.
 
 
 Balancing procedure

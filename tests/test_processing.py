@@ -6,6 +6,8 @@ import pytest
 from pyPRB.processing import (
     VibrationExtractor,
     SynchronousAveraging,
+    FFTExtraction,
+    ExtractionMethod,
     detect_rotation_freq,
 )
 from pyPRB.processing._vibration_extractor import _rfft
@@ -87,6 +89,36 @@ class TestRfft:
             _rfft(signal, 1000.0, nfft_mult=0)
         with pytest.raises(ValueError, match="nfft_mult must be a positive integer"):
             _rfft(signal, 1000.0, nfft_mult=-1)
+
+    def test_hann_window_amplitude(self):
+        """Hann window should still recover correct peak amplitude."""
+        sr = 1000.0
+        f0 = 25.0
+        t = np.arange(0, 1.0, 1 / sr)
+        signal = 3.0 * np.cos(2 * np.pi * f0 * t)
+
+        freq, H = _rfft(signal, sr, remove_dc=True, window="hann")
+        idx = np.argmax(np.abs(H))
+        assert np.isclose(freq[idx], f0, atol=1.5)
+        assert np.isclose(np.abs(H[idx]), 3.0, rtol=0.05)
+
+    def test_hann_window_with_zero_padding(self):
+        """Hann window + zero-padding should give correct amplitude."""
+        sr = 1000.0
+        f0 = 25.0
+        t = np.arange(0, 1.0, 1 / sr)
+        signal = 5.0 * np.cos(2 * np.pi * f0 * t)
+
+        freq, H = _rfft(signal, sr, nfft_mult=4, remove_dc=True, window="hann")
+        idx = np.argmax(np.abs(H))
+        assert np.isclose(freq[idx], f0, atol=0.5)
+        assert np.isclose(np.abs(H[idx]), 5.0, rtol=0.05)
+
+    def test_invalid_window(self):
+        """Unknown window name should raise ValueError."""
+        signal = np.zeros(100)
+        with pytest.raises(ValueError, match="Unknown window"):
+            _rfft(signal, 1000.0, window="kaiser")
 
 
 # ---------------------------------------------------------------------------
@@ -346,3 +378,186 @@ class TestVibrationExtractor:
 
         assert np.isclose(vv.amplitude, amp, rtol=0.05)
         assert np.isclose(vv.phase, phase, atol=5.0)
+
+
+# ---------------------------------------------------------------------------
+# Test FFTExtraction
+# ---------------------------------------------------------------------------
+
+class TestFFTExtraction:
+    """Tests for FFT-based extraction.
+
+    The ``make_trigger`` helper creates a square wave via ``sin``, whose
+    FFT fundamental has a −90° phase offset relative to ``cos``.  With
+    the raw phase subtraction in :class:`FFTExtraction`, the expected
+    relative phase for a cosine signal and a sin-based trigger is
+    ``signal_phase − trigger_phase + 90°``.
+
+    Tests that need a clean phase relationship use cosine signals for
+    both signal and trigger (via ``make_vibration``).
+    """
+
+    def test_protocol_compliance(self):
+        """FFTExtraction should satisfy the ExtractionMethod protocol."""
+        assert isinstance(FFTExtraction(), ExtractionMethod)
+
+    def test_extract_known_amplitude(self):
+        """Extract amplitude from a pure cosine."""
+        f0 = 25.0
+        sr = 10000.0
+        dur = 5.0
+        amp = 2.0
+        phase = 30.0
+
+        trigger = make_vibration(f0, 1.0, 0.0, sr, dur)
+        signal = make_vibration(f0, amp, phase, sr, dur)
+
+        method = FFTExtraction()
+        amp_out, phase_out = method.extract(signal, trigger, sr, f0)
+
+        assert np.isclose(amp_out, amp, rtol=0.05)
+        assert np.isclose(phase_out, phase, atol=5.0)
+
+    def test_phase_relative_to_trigger(self):
+        """Extracted phase should equal signal_phase - trigger_phase."""
+        f0 = 25.0
+        sr = 10000.0
+        dur = 5.0
+        amp = 2.0
+        trigger_phase = 20.0
+        signal_phase = 70.0
+
+        trigger = make_vibration(f0, 1.0, trigger_phase, sr, dur)
+        signal = make_vibration(f0, amp, signal_phase, sr, dur)
+
+        method = FFTExtraction()
+        amp_out, phase_out = method.extract(signal, trigger, sr, f0)
+        expected_phase = signal_phase - trigger_phase  # 50 deg
+        assert np.isclose(amp_out, amp, rtol=0.05)
+        assert np.isclose(phase_out, expected_phase, atol=5.0)
+
+    def test_zero_phase(self):
+        """Signal and trigger both at 0 deg should give ~0 phase."""
+        f0 = 25.0
+        sr = 10000.0
+        dur = 5.0
+
+        trigger = make_vibration(f0, 1.0, 0.0, sr, dur)
+        signal = make_vibration(f0, 1.0, 0.0, sr, dur)
+
+        method = FFTExtraction()
+        _, phase_out = method.extract(signal, trigger, sr, f0)
+        assert np.isclose(phase_out, 0.0, atol=5.0)
+
+    def test_negative_phase(self):
+        """Negative signal phase should be recovered."""
+        f0 = 25.0
+        sr = 10000.0
+        dur = 5.0
+
+        trigger = make_vibration(f0, 1.0, 0.0, sr, dur)
+        signal = make_vibration(f0, 3.0, -60.0, sr, dur)
+
+        method = FFTExtraction()
+        amp_out, phase_out = method.extract(signal, trigger, sr, f0)
+        assert np.isclose(amp_out, 3.0, rtol=0.05)
+        assert np.isclose(phase_out, -60.0, atol=5.0)
+
+    def test_with_noise(self):
+        """Extraction should work with moderate noise."""
+        f0 = 25.0
+        sr = 10000.0
+        dur = 5.0
+        amp = 2.0
+        phase = 45.0
+
+        trigger = make_vibration(f0, 1.0, 0.0, sr, dur)
+        signal = make_vibration(f0, amp, phase, sr, dur, noise_level=0.1)
+
+        method = FFTExtraction()
+        amp_out, phase_out = method.extract(signal, trigger, sr, f0)
+        assert np.isclose(amp_out, amp, rtol=0.05)
+        assert np.isclose(phase_out, phase, atol=5.0)
+
+    def test_different_nfft_mult(self):
+        """Different nfft_mult values should all produce correct results."""
+        f0 = 25.0
+        sr = 10000.0
+        dur = 5.0
+        amp = 2.0
+        phase = 30.0
+
+        trigger = make_vibration(f0, 1.0, 0.0, sr, dur)
+        signal = make_vibration(f0, amp, phase, sr, dur)
+
+        for mult in (1, 4, 8):
+            method = FFTExtraction(nfft_mult=mult)
+            amp_out, phase_out = method.extract(signal, trigger, sr, f0)
+            assert np.isclose(amp_out, amp, rtol=0.05), f"nfft_mult={mult}"
+            assert np.isclose(phase_out, phase, atol=5.0), f"nfft_mult={mult}"
+
+    def test_invalid_nfft_mult(self):
+        with pytest.raises(ValueError, match="nfft_mult must be a positive integer"):
+            FFTExtraction(nfft_mult=0)
+        with pytest.raises(ValueError, match="nfft_mult must be a positive integer"):
+            FFTExtraction(nfft_mult=-1)
+
+    def test_invalid_freq_tolerance(self):
+        with pytest.raises(ValueError, match="freq_tolerance must be between"):
+            FFTExtraction(freq_tolerance=0.0)
+        with pytest.raises(ValueError, match="freq_tolerance must be between"):
+            FFTExtraction(freq_tolerance=1.0)
+        with pytest.raises(ValueError, match="freq_tolerance must be between"):
+            FFTExtraction(freq_tolerance=1.5)
+
+    def test_no_peak_in_tolerance_band(self):
+        """Very narrow tolerance with coarse bins should raise ValueError."""
+        f0 = 25.3
+        sr = 1000.0
+        dur = 0.1
+
+        trigger = make_trigger(f0, sr, dur)
+        signal = make_vibration(f0, 1.0, 0.0, sr, dur)
+
+        method = FFTExtraction(nfft_mult=1, freq_tolerance=0.01)
+        with pytest.raises(ValueError, match="No frequency bins"):
+            method.extract(signal, trigger, sr, f0)
+
+    def test_end_to_end_with_vibration_extractor(self):
+        """FFTExtraction plugged into VibrationExtractor should work."""
+        f0 = 25.0
+        sr = 10000.0
+        dur = 5.0
+        amp = 1.5
+        phase = -45.0
+
+        trigger = make_vibration(f0, 1.0, 0.0, sr, dur)
+        signal = make_vibration(f0, amp, phase, sr, dur)
+
+        extractor = VibrationExtractor(
+            sample_rate=sr, rotation_freq=f0, method=FFTExtraction(),
+        )
+        vv = extractor.get_vibration_vector(signal, trigger)
+
+        assert isinstance(vv, VibrationVector)
+        assert np.isclose(vv.amplitude, amp, rtol=0.05)
+        expected_phase = phase % 360  # -45 -> 315
+        assert np.isclose(vv.phase, expected_phase, atol=5.0)
+
+    def test_stores_diagnostics(self):
+        """Diagnostic attributes should be populated after extract."""
+        f0 = 25.0
+        sr = 10000.0
+        dur = 2.0
+
+        trigger = make_vibration(f0, 1.0, 0.0, sr, dur)
+        signal = make_vibration(f0, 1.0, 0.0, sr, dur)
+
+        method = FFTExtraction()
+        method.extract(signal, trigger, sr, f0)
+
+        assert method.freq_ is not None
+        assert method.H_signal_ is not None
+        assert method.H_trigger_ is not None
+        assert method.peak_idx_ is not None
+        assert isinstance(method.peak_idx_, int)

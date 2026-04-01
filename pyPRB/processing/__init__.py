@@ -16,11 +16,13 @@ averages revolution-locked signal segments and extracts the fundamental
 """
 
 from ._vibration_extractor import ExtractionMethod, VibrationExtractor, detect_rotation_freq
+from .fft_extraction import FFTExtraction
 from .synchronous_averaging import SynchronousAveraging
 
 __all__ = [
     "ExtractionMethod",
     "VibrationExtractor",
     "detect_rotation_freq",
+    "FFTExtraction",
     "SynchronousAveraging",
 ]

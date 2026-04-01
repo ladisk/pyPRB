@@ -64,6 +64,16 @@ detect_rotation_freq
 .. autofunction:: pyPRB.detect_rotation_freq
 
 
+VibrationExtractor
+------------------
+
+.. autoclass:: pyPRB.VibrationExtractor
+   :members:
+   :special-members: __init__
+   :undoc-members:
+   :show-inheritance:
+
+
 ExtractionMethod
 ----------------
 
@@ -83,10 +93,10 @@ SynchronousAveraging
    :show-inheritance:
 
 
-VibrationExtractor
-------------------
+FFTExtraction
+-------------
 
-.. autoclass:: pyPRB.VibrationExtractor
+.. autoclass:: pyPRB.FFTExtraction
    :members:
    :special-members: __init__
    :undoc-members:

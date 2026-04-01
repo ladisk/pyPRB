@@ -49,11 +49,20 @@ class ExtractionMethod(Protocol):
         ...
 
 
+_WINDOWS: dict[str, np.ufunc] = {
+    "hann": np.hanning,
+    "hamming": np.hamming,
+    "bartlett": np.bartlett,
+    "blackman": np.blackman,
+}
+
+
 def _rfft(
     signal: np.ndarray,
     sample_rate: float,
     nfft_mult: int = 1,
     remove_dc: bool = False,
+    window: str | None = None,
 ) -> tuple[np.ndarray, np.ndarray]:
     """Compute a scaled one-sided FFT of *signal*.
 
@@ -72,6 +81,12 @@ def _rfft(
     remove_dc : bool
         If ``True``, subtract the mean of the signal before computing
         the FFT to suppress the DC component.
+    window : str or None
+        Window function to apply before the FFT.  Supported values are
+        ``'hann'``, ``'hamming'``, ``'bartlett'``, and ``'blackman'``.
+        ``None`` (default) applies no window.  The amplitude scaling is
+        compensated for the coherent gain of the window so that
+        ``|H[k]|`` still returns the correct peak amplitude.
 
     Returns
     -------
@@ -86,9 +101,21 @@ def _rfft(
         )
     if remove_dc:
         signal = signal - np.mean(signal)
+
     M = len(signal)
+    coherent_gain = 1.0
+    if window is not None:
+        if window not in _WINDOWS:
+            raise ValueError(
+                f"Unknown window {window!r}. "
+                f"Supported windows: {sorted(_WINDOWS)}."
+            )
+        w = _WINDOWS[window](M)
+        signal = signal * w
+        coherent_gain = float(np.mean(w))
+
     N = M * nfft_mult
-    H = np.fft.rfft(signal, n=N) * 2 / N * nfft_mult
+    H = np.fft.rfft(signal, n=N) * 2 / N * nfft_mult / coherent_gain
     freq = np.fft.rfftfreq(N, d=1 / sample_rate)
     return freq, H
 

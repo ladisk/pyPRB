@@ -8,6 +8,8 @@ from __future__ import annotations
 
 import numpy as np
 
+from ._vibration_extractor import _rfft
+
 
 class SynchronousAveraging:
     """Extracts the fundamental vibration component via synchronous averaging.
@@ -95,9 +97,6 @@ class SynchronousAveraging:
             Phase of the fundamental component in degrees.
         """
         crossings = self._find_trigger_crossings(trigger)
-        if self.plotting:
-            time = np.arange(len(trigger)) / sample_rate
-            self._plot_trigger_crossings(time, trigger, crossings, rotation_freq)
 
         expected_period = sample_rate / rotation_freq
         self.averaged_, self.segments_ = self._synchronous_average(
@@ -106,9 +105,11 @@ class SynchronousAveraging:
         amplitude, phase_deg = self._extract_fundamental(self.averaged_)
 
         if self.plotting:
+            time = np.arange(len(trigger)) / sample_rate
             n_total = len(crossings) - 1
             n_rejected = n_total - len(self.segments_)
-            self._plot_synchronous_average(
+            self._plot_extraction(
+                time, trigger, crossings, rotation_freq,
                 self.segments_, self.averaged_, amplitude, phase_deg,
                 expected_period=expected_period,
                 n_total=n_total,
@@ -239,59 +240,21 @@ class SynchronousAveraging:
         phase_deg : float
             Phase of the fundamental component in degrees.
         """
-        N = len(averaged)
-        H1 = np.fft.rfft(averaged)[1]
-        amplitude = float(2 * np.abs(H1) / N)
-        phase_deg = float(np.degrees(np.angle(H1)))
+        _, H = _rfft(averaged, sample_rate=len(averaged))
+        amplitude = float(np.abs(H[1]))
+        phase_deg = float(np.degrees(np.angle(H[1])))
         return amplitude, phase_deg
 
     # ------------------------------------------------------------------
     # Plotting
     # ------------------------------------------------------------------
 
-    @staticmethod
-    def _import_matplotlib():
-        try:
-            import matplotlib.pyplot as plt
-            return plt
-        except ImportError:
-            raise ImportError(
-                "matplotlib is required for plotting. "
-                "Install with: pip install pyPRB[plot]"
-            ) from None
-
-    def _plot_trigger_crossings(
+    def _plot_extraction(
         self,
         time: np.ndarray,
         trigger: np.ndarray,
         crossings: np.ndarray,
         rotation_freq: float,
-        n_periods: int = 5,
-    ) -> None:
-        """Plot the trigger signal with detected crossings marked."""
-        plt = self._import_matplotlib()
-
-        t_end = n_periods / rotation_freq
-        mask = time <= t_end
-
-        fig, ax = plt.subplots(figsize=(12, 3))
-        ax.plot(time[mask], trigger[mask], color="steelblue", label="Trigger")
-        ax.axhline(np.mean(trigger), color="gray", linestyle="--",
-                    linewidth=0.8, label="Threshold")
-
-        crossings_in_window = crossings[crossings < np.sum(mask)]
-        ax.scatter(time[crossings_in_window], trigger[crossings_in_window],
-                   color="red", zorder=5, s=30, label="Crossings")
-        ax.set_xlabel("Time (s)")
-        ax.set_ylabel("Amplitude")
-        ax.set_title(f"Trigger crossings ({len(crossings)} total, "
-                     f"first {n_periods} periods shown)")
-        ax.legend()
-        plt.tight_layout()
-        plt.show(block=True)
-
-    def _plot_synchronous_average(
-        self,
         segments: list[np.ndarray],
         averaged: np.ndarray,
         amplitude: float,
@@ -299,11 +262,32 @@ class SynchronousAveraging:
         expected_period: float,
         n_total: int,
         n_rejected: int,
+        n_periods: int = 5,
     ) -> None:
-        """Plot individual segments, the synchronous average, and the
-        fundamental cosine fit."""
-        plt = self._import_matplotlib()
+        """Plot trigger crossings and synchronous average in one figure."""
+        from ._vibration_extractor import _import_matplotlib
+        plt = _import_matplotlib()
 
+        fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(12, 8))
+
+        # -- Trigger crossings --
+        t_end = n_periods / rotation_freq
+        mask = time <= t_end
+
+        ax1.plot(time[mask], trigger[mask], color="steelblue", label="Trigger")
+        ax1.axhline(np.mean(trigger), color="gray", linestyle="--",
+                     linewidth=0.8, label="Threshold")
+
+        crossings_in_window = crossings[crossings < np.sum(mask)]
+        ax1.scatter(time[crossings_in_window], trigger[crossings_in_window],
+                    color="red", zorder=5, s=30, label="Crossings")
+        ax1.set_xlabel("Time (s)")
+        ax1.set_ylabel("Amplitude")
+        ax1.set_title(f"Trigger crossings ({len(crossings)} total, "
+                      f"first {n_periods} periods shown)")
+        ax1.legend()
+
+        # -- Synchronous average --
         target_samples = len(averaged)
         angle = np.linspace(0, 360, target_samples, endpoint=False)
         angle_rad = np.linspace(0, 2 * np.pi, target_samples, endpoint=False)
@@ -312,18 +296,17 @@ class SynchronousAveraging:
         lo = (1 - self.period_tolerance) * expected_period
         hi = (1 + self.period_tolerance) * expected_period
 
-        fig, ax = plt.subplots(figsize=(12, 6))
         for seg in segments:
-            ax.plot(angle, seg, color="gray", alpha=0.1)
-        ax.plot(angle, averaged, color="red", linewidth=2, label="Average")
-        ax.plot(angle, cosine_fit, color="blue", linestyle="--",
-                label=f"Fundamental: {amplitude:.4g} @ {phase_deg:.1f}°")
-        ax.set_xlabel("Angle (°)")
-        ax.set_ylabel("Amplitude")
-        ax.set_xlim(0, 360)
-        ax.set_xticks(np.arange(0, 361, 45))
-        ax.axhline(0, color="black", linewidth=0.5, linestyle="--")
-        ax.set_title(
+            ax2.plot(angle, seg, color="gray", alpha=0.1)
+        ax2.plot(angle, averaged, color="red", linewidth=2, label="Average")
+        ax2.plot(angle, cosine_fit, color="blue", linestyle="--",
+                 label=f"Fundamental: {amplitude:.4g} @ {phase_deg:.1f}\u00b0")
+        ax2.set_xlabel("Angle (\u00b0)")
+        ax2.set_ylabel("Amplitude")
+        ax2.set_xlim(0, 360)
+        ax2.set_xticks(np.arange(0, 361, 45))
+        ax2.axhline(0, color="black", linewidth=0.5, linestyle="--")
+        ax2.set_title(
             f"Synchronous average \u2014 "
             f"{len(segments)}/{n_total} segments "
             f"({n_rejected} rejected, "
@@ -332,6 +315,7 @@ class SynchronousAveraging:
             f"bounds: [{lo:.0f}, {hi:.0f}], "
             f"median period: {target_samples} samples"
         )
-        ax.legend()
+        ax2.legend()
+
         plt.tight_layout()
         plt.show(block=True)

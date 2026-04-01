@@ -260,6 +260,68 @@ class TestSynchronousAveraging:
         assert np.isclose(amp_out, amp, rtol=0.05)
         assert np.isclose(phase_out, expected_phase, atol=5.0)
 
+    def test_zero_phase(self):
+        """Signal and trigger both at 0 deg should give ~0 phase."""
+        f0 = 25.0
+        sr = 10000.0
+        dur = 5.0
+
+        trigger = make_trigger(f0, sr, dur, phase_deg=0.0)
+        signal = make_vibration(f0, 1.0, 0.0, sr, dur)
+
+        method = SynchronousAveraging(edge="rising")
+        _, phase_out = method.extract(signal, trigger, sr, f0)
+        assert np.isclose(phase_out, 0.0, atol=5.0)
+
+    def test_negative_phase(self):
+        """Negative signal phase should be recovered."""
+        f0 = 25.0
+        sr = 10000.0
+        dur = 5.0
+
+        trigger = make_trigger(f0, sr, dur, phase_deg=0.0)
+        signal = make_vibration(f0, 3.0, -60.0, sr, dur)
+
+        method = SynchronousAveraging(edge="rising")
+        amp_out, phase_out = method.extract(signal, trigger, sr, f0)
+        assert np.isclose(amp_out, 3.0, rtol=0.05)
+        assert np.isclose(phase_out, -60.0, atol=5.0)
+
+    def test_with_noise(self):
+        """Extraction should work with moderate noise."""
+        f0 = 25.0
+        sr = 10000.0
+        dur = 5.0
+        amp = 2.0
+        phase = 45.0
+
+        trigger = make_trigger(f0, sr, dur)
+        signal = make_vibration(f0, amp, phase, sr, dur, noise_level=0.1)
+
+        method = SynchronousAveraging(edge="rising")
+        amp_out, phase_out = method.extract(signal, trigger, sr, f0)
+        assert np.isclose(amp_out, amp, rtol=0.05)
+        assert np.isclose(phase_out, phase, atol=5.0)
+
+    def test_protocol_compliance(self):
+        """SynchronousAveraging should satisfy the ExtractionMethod protocol."""
+        assert isinstance(SynchronousAveraging(), ExtractionMethod)
+
+    def test_stores_diagnostics(self):
+        """Diagnostic attributes should be populated after extract."""
+        f0 = 25.0
+        sr = 10000.0
+        dur = 2.0
+
+        trigger = make_trigger(f0, sr, dur)
+        signal = make_vibration(f0, 1.0, 0.0, sr, dur)
+
+        method = SynchronousAveraging(edge="rising")
+        method.extract(signal, trigger, sr, f0)
+
+        assert method.averaged_ is not None
+        assert len(method.segments_) > 0
+
     def test_invalid_edge(self):
         with pytest.raises(ValueError, match="edge must be"):
             SynchronousAveraging(edge="invalid")

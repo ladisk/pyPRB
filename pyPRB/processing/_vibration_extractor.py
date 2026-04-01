@@ -7,7 +7,6 @@ import numpy as np
 from typing import Protocol, runtime_checkable
 
 from ..core import VibrationVector
-from .synchronous_averaging import SynchronousAveraging
 
 
 @runtime_checkable
@@ -309,7 +308,10 @@ class VibrationExtractor:
 
         self.sample_rate = float(sample_rate)
         self.rotation_freq = float(rotation_freq)
-        self.method = method if method is not None else SynchronousAveraging()
+        if method is None:
+            from .synchronous_averaging import SynchronousAveraging
+            method = SynchronousAveraging()
+        self.method = method
 
     def get_vibration_vector(
         self,

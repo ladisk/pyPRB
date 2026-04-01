@@ -13,7 +13,7 @@ class TestVibrationVector:
         assert v.amplitude == 10.0
         assert v.phase == 45.0
 
-    def test_creatin_from_complex(self):
+    def test_creation_from_complex(self):
         """Test creation from complex number."""
         v = VibrationVector.from_complex(1 + 1j)
         assert np.isclose(v.amplitude, np.sqrt(2))
@@ -122,19 +122,16 @@ class TestMassVector:
         with pytest.raises(TypeError, match="Units must be a string."):
             MassVector(2.0, 45.0, units=123)
 
-    def test_phase_normalization(self):
+    @pytest.mark.parametrize("input_phase,expected", [
+        (350.0, -10.0),    # 350 -> -10
+        (-30.0, -30.0),    # -30 stays -30
+        (180.0, 180.0),    # 180 stays 180
+        (540.0, 180.0),    # 540 % 360 = 180
+    ])
+    def test_phase_normalization(self, input_phase, expected):
         """Test that phase is normalized to [-180, 180]."""
-        m1 = MassVector(1.0, 350.0)
-        assert m1.phase == -10.0  # 350 -> -10
-
-        m2 = MassVector(1.0, -30.0)
-        assert m2.phase == -30.0  # -30 + 360 = 330 -> -30
-
-        m3 = MassVector(1.0, 180.0)
-        assert m3.phase == 180.0  # 180 stays 180
-
-        m4 = MassVector(1.0, 540.0)
-        assert m4.phase == 180.0  # 540 % 360 = 180
+        m = MassVector(1.0, input_phase)
+        assert m.phase == expected
 
     def test_repr(self):
         """Test string representation."""

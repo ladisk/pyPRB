@@ -7,6 +7,7 @@ from pyPRB.processing import (
     VibrationExtractor,
     SynchronousAveraging,
     FFTExtraction,
+    IQDemodulation,
     ExtractionMethod,
     detect_rotation_freq,
 )
@@ -22,11 +23,11 @@ def make_trigger(f0: float, sample_rate: float, duration: float,
                  phase_deg: float = 0.0) -> np.ndarray:
     """Square wave trigger signal at frequency *f0*.
 
-    Uses ``sin`` so that the rising crossing aligns with *phase_deg* and
-    the extracted phase equals ``signal_phase - trigger_phase``.
+    Uses ``cos`` so that the fundamental's frequency-domain phase
+    follows cosine convention.
     """
     t = np.arange(0, duration, 1 / sample_rate)
-    return np.sign(np.sin(2 * np.pi * f0 * t + np.deg2rad(phase_deg)))
+    return np.sign(np.cos(2 * np.pi * f0 * t + np.deg2rad(phase_deg)))
 
 
 def make_vibration(
@@ -225,6 +226,27 @@ class TestExtractFundamental:
 # ---------------------------------------------------------------------------
 
 class TestSynchronousAveraging:
+    # SA segments the signal at trigger crossings.  The cosine-based
+    # make_trigger has its rising crossing offset by -90° compared to
+    # a sine-based trigger, so we shift trigger phases accordingly.
+    CROSSING_OFFSET = -90.0
+
+    def test_crossing_offset(self):
+        """CROSSING_OFFSET makes cosine trigger produce same crossings as sine trigger."""
+        f0 = 25.0
+        sr = 10000.0
+        dur = 1.0
+
+        t = np.arange(0, dur, 1 / sr)
+        sin_trigger = np.sign(np.sin(2 * np.pi * f0 * t))
+        cos_trigger = make_trigger(f0, sr, dur, phase_deg=self.CROSSING_OFFSET)
+
+        method = SynchronousAveraging(edge="rising")
+        sin_crossings = method._find_trigger_crossings(sin_trigger)
+        cos_crossings = method._find_trigger_crossings(cos_trigger)
+
+        np.testing.assert_allclose(sin_crossings, cos_crossings, atol=1)
+
     def test_extract(self):
         """Full extraction pipeline with known signal."""
         f0 = 25.0
@@ -233,7 +255,7 @@ class TestSynchronousAveraging:
         amp = 2.0
         phase = 30.0
 
-        trigger = make_trigger(f0, sr, dur)
+        trigger = make_trigger(f0, sr, dur, phase_deg=self.CROSSING_OFFSET)
         signal = make_vibration(f0, amp, phase, sr, dur, noise_level=0.01)
 
         method = SynchronousAveraging(edge="rising")
@@ -251,7 +273,8 @@ class TestSynchronousAveraging:
         trigger_phase = 20.0
         signal_phase = 70.0
 
-        trigger = make_trigger(f0, sr, dur, phase_deg=trigger_phase)
+        trigger = make_trigger(f0, sr, dur,
+                               phase_deg=trigger_phase + self.CROSSING_OFFSET)
         signal = make_vibration(f0, amp, signal_phase, sr, dur, noise_level=0.01)
 
         method = SynchronousAveraging(edge="rising")
@@ -266,7 +289,7 @@ class TestSynchronousAveraging:
         sr = 10000.0
         dur = 5.0
 
-        trigger = make_trigger(f0, sr, dur, phase_deg=0.0)
+        trigger = make_trigger(f0, sr, dur, phase_deg=self.CROSSING_OFFSET)
         signal = make_vibration(f0, 1.0, 0.0, sr, dur)
 
         method = SynchronousAveraging(edge="rising")
@@ -279,7 +302,7 @@ class TestSynchronousAveraging:
         sr = 10000.0
         dur = 5.0
 
-        trigger = make_trigger(f0, sr, dur, phase_deg=0.0)
+        trigger = make_trigger(f0, sr, dur, phase_deg=self.CROSSING_OFFSET)
         signal = make_vibration(f0, 3.0, -60.0, sr, dur)
 
         method = SynchronousAveraging(edge="rising")
@@ -295,7 +318,7 @@ class TestSynchronousAveraging:
         amp = 2.0
         phase = 45.0
 
-        trigger = make_trigger(f0, sr, dur)
+        trigger = make_trigger(f0, sr, dur, phase_deg=self.CROSSING_OFFSET)
         signal = make_vibration(f0, amp, phase, sr, dur, noise_level=0.1)
 
         method = SynchronousAveraging(edge="rising")
@@ -313,7 +336,7 @@ class TestSynchronousAveraging:
         sr = 10000.0
         dur = 2.0
 
-        trigger = make_trigger(f0, sr, dur)
+        trigger = make_trigger(f0, sr, dur, phase_deg=self.CROSSING_OFFSET)
         signal = make_vibration(f0, 1.0, 0.0, sr, dur)
 
         method = SynchronousAveraging(edge="rising")
@@ -381,6 +404,9 @@ class TestDetectRotationFreq:
 
 
 class TestVibrationExtractor:
+    # Default method is SA, which needs the crossing offset
+    SA_OFFSET = TestSynchronousAveraging.CROSSING_OFFSET
+
     def test_get_vibration_vector(self):
         """End-to-end: synthetic signals → VibrationVector."""
         f0 = 25.0
@@ -389,7 +415,7 @@ class TestVibrationExtractor:
         amp = 1.5
         phase = -45.0
 
-        trigger = make_trigger(f0, sr, dur)
+        trigger = make_trigger(f0, sr, dur, phase_deg=self.SA_OFFSET)
         signal = make_vibration(f0, amp, phase, sr, dur, noise_level=0.01)
 
         extractor = VibrationExtractor(sample_rate=sr, rotation_freq=f0)
@@ -431,7 +457,7 @@ class TestVibrationExtractor:
         amp = 2.0
         phase = 60.0
 
-        trigger = make_trigger(f0, sr, dur)
+        trigger = make_trigger(f0, sr, dur, phase_deg=self.SA_OFFSET)
         signal = make_vibration(f0, amp, phase, sr, dur, noise_level=0.01)
 
         detected = detect_rotation_freq(trigger, sample_rate=sr, max_freq=50.0)
@@ -447,17 +473,7 @@ class TestVibrationExtractor:
 # ---------------------------------------------------------------------------
 
 class TestFFTExtraction:
-    """Tests for FFT-based extraction.
-
-    The ``make_trigger`` helper creates a square wave via ``sin``, whose
-    FFT fundamental has a −90° phase offset relative to ``cos``.  With
-    the raw phase subtraction in :class:`FFTExtraction`, the expected
-    relative phase for a cosine signal and a sin-based trigger is
-    ``signal_phase − trigger_phase + 90°``.
-
-    Tests that need a clean phase relationship use cosine signals for
-    both signal and trigger (via ``make_vibration``).
-    """
+    """Tests for FFT-based extraction."""
 
     def test_protocol_compliance(self):
         """FFTExtraction should satisfy the ExtractionMethod protocol."""
@@ -471,7 +487,7 @@ class TestFFTExtraction:
         amp = 2.0
         phase = 30.0
 
-        trigger = make_vibration(f0, 1.0, 0.0, sr, dur)
+        trigger = make_trigger(f0, sr, dur)
         signal = make_vibration(f0, amp, phase, sr, dur)
 
         method = FFTExtraction()
@@ -489,7 +505,7 @@ class TestFFTExtraction:
         trigger_phase = 20.0
         signal_phase = 70.0
 
-        trigger = make_vibration(f0, 1.0, trigger_phase, sr, dur)
+        trigger = make_trigger(f0, sr, dur, phase_deg=trigger_phase)
         signal = make_vibration(f0, amp, signal_phase, sr, dur)
 
         method = FFTExtraction()
@@ -504,7 +520,7 @@ class TestFFTExtraction:
         sr = 10000.0
         dur = 5.0
 
-        trigger = make_vibration(f0, 1.0, 0.0, sr, dur)
+        trigger = make_trigger(f0, sr, dur)
         signal = make_vibration(f0, 1.0, 0.0, sr, dur)
 
         method = FFTExtraction()
@@ -517,7 +533,7 @@ class TestFFTExtraction:
         sr = 10000.0
         dur = 5.0
 
-        trigger = make_vibration(f0, 1.0, 0.0, sr, dur)
+        trigger = make_trigger(f0, sr, dur)
         signal = make_vibration(f0, 3.0, -60.0, sr, dur)
 
         method = FFTExtraction()
@@ -533,7 +549,7 @@ class TestFFTExtraction:
         amp = 2.0
         phase = 45.0
 
-        trigger = make_vibration(f0, 1.0, 0.0, sr, dur)
+        trigger = make_trigger(f0, sr, dur)
         signal = make_vibration(f0, amp, phase, sr, dur, noise_level=0.1)
 
         method = FFTExtraction()
@@ -549,7 +565,7 @@ class TestFFTExtraction:
         amp = 2.0
         phase = 30.0
 
-        trigger = make_vibration(f0, 1.0, 0.0, sr, dur)
+        trigger = make_trigger(f0, sr, dur)
         signal = make_vibration(f0, amp, phase, sr, dur)
 
         for mult in (1, 4, 8):
@@ -593,7 +609,7 @@ class TestFFTExtraction:
         amp = 1.5
         phase = -45.0
 
-        trigger = make_vibration(f0, 1.0, 0.0, sr, dur)
+        trigger = make_trigger(f0, sr, dur)
         signal = make_vibration(f0, amp, phase, sr, dur)
 
         extractor = VibrationExtractor(
@@ -612,7 +628,7 @@ class TestFFTExtraction:
         sr = 10000.0
         dur = 2.0
 
-        trigger = make_vibration(f0, 1.0, 0.0, sr, dur)
+        trigger = make_trigger(f0, sr, dur)
         signal = make_vibration(f0, 1.0, 0.0, sr, dur)
 
         method = FFTExtraction()
@@ -623,3 +639,180 @@ class TestFFTExtraction:
         assert method.H_trigger_ is not None
         assert method.peak_idx_ is not None
         assert isinstance(method.peak_idx_, int)
+
+
+# ---------------------------------------------------------------------------
+# Test IQDemodulation
+# ---------------------------------------------------------------------------
+
+class TestIQDemodulation:
+    """Tests for IQ demodulation (lock-in amplification) extraction."""
+
+    def test_protocol_compliance(self):
+        """IQDemodulation should satisfy the ExtractionMethod protocol."""
+        assert isinstance(IQDemodulation(), ExtractionMethod)
+
+    def test_amplitude_and_phase(self):
+        """Extract amplitude and phase from a pure cosine."""
+        f0 = 25.0
+        sr = 10000.0
+        dur = 5.0
+        amp = 2.0
+        phase = 30.0
+
+        trigger = make_trigger(f0, sr, dur)
+        signal = make_vibration(f0, amp, phase, sr, dur)
+
+        method = IQDemodulation()
+        amp_out, phase_out = method.extract(signal, trigger, sr, f0)
+
+        assert np.isclose(amp_out, amp, rtol=0.05)
+        assert np.isclose(phase_out, phase, atol=5.0)
+
+    def test_phase_relative_to_trigger(self):
+        """Extracted phase should equal signal_phase - trigger_phase."""
+        f0 = 25.0
+        sr = 10000.0
+        dur = 5.0
+        amp = 2.0
+        trigger_phase = 20.0
+        signal_phase = 70.0
+
+        trigger = make_trigger(f0, sr, dur, phase_deg=trigger_phase)
+        signal = make_vibration(f0, amp, signal_phase, sr, dur)
+
+        method = IQDemodulation()
+        amp_out, phase_out = method.extract(signal, trigger, sr, f0)
+        expected_phase = signal_phase - trigger_phase  # 50 deg
+        assert np.isclose(amp_out, amp, rtol=0.05)
+        assert np.isclose(phase_out, expected_phase, atol=5.0)
+
+    def test_zero_phase(self):
+        """Signal and trigger both at 0 deg should give ~0 phase."""
+        f0 = 25.0
+        sr = 10000.0
+        dur = 5.0
+
+        trigger = make_trigger(f0, sr, dur)
+        signal = make_vibration(f0, 1.0, 0.0, sr, dur)
+
+        method = IQDemodulation()
+        _, phase_out = method.extract(signal, trigger, sr, f0)
+        assert np.isclose(phase_out, 0.0, atol=5.0)
+
+    def test_negative_phase(self):
+        """Negative signal phase should be recovered."""
+        f0 = 25.0
+        sr = 10000.0
+        dur = 5.0
+
+        trigger = make_trigger(f0, sr, dur)
+        signal = make_vibration(f0, 3.0, -60.0, sr, dur)
+
+        method = IQDemodulation()
+        amp_out, phase_out = method.extract(signal, trigger, sr, f0)
+        assert np.isclose(amp_out, 3.0, rtol=0.05)
+        assert np.isclose(phase_out, -60.0, atol=5.0)
+
+    def test_with_noise(self):
+        """Extraction should work with moderate noise."""
+        f0 = 25.0
+        sr = 10000.0
+        dur = 5.0
+        amp = 2.0
+        phase = 45.0
+
+        trigger = make_trigger(f0, sr, dur)
+        signal = make_vibration(f0, amp, phase, sr, dur, noise_level=0.1)
+
+        method = IQDemodulation()
+        amp_out, phase_out = method.extract(signal, trigger, sr, f0)
+        assert np.isclose(amp_out, amp, rtol=0.05)
+        assert np.isclose(phase_out, phase, atol=5.0)
+
+    def test_diagnostics_populated(self):
+        """Diagnostic attributes should be populated after extract."""
+        f0 = 25.0
+        sr = 10000.0
+        dur = 2.0
+
+        trigger = make_trigger(f0, sr, dur)
+        signal = make_vibration(f0, 1.0, 0.0, sr, dur)
+
+        method = IQDemodulation()
+        method.extract(signal, trigger, sr, f0)
+
+        assert method.I_signal_ is not None
+        assert method.Q_signal_ is not None
+        assert method.I_trigger_ is not None
+        assert method.Q_trigger_ is not None
+        assert method.n_samples_used_ is not None
+        assert isinstance(method.n_samples_used_, int)
+
+    def test_trim_periods(self):
+        """Trimming should handle non-integer-period signal lengths."""
+        f0 = 25.0
+        sr = 10000.0
+        amp = 2.0
+        phase = 30.0
+        # Duration that does NOT produce an integer number of periods
+        dur = 5.03
+
+        trigger = make_trigger(f0, sr, dur)
+        signal = make_vibration(f0, amp, phase, sr, dur)
+
+        method = IQDemodulation(trim_periods=True)
+        amp_out, phase_out = method.extract(signal, trigger, sr, f0)
+        assert np.isclose(amp_out, amp, rtol=0.05)
+        assert np.isclose(phase_out, phase, atol=5.0)
+
+    def test_remove_dc(self):
+        """DC offset should not affect the result when remove_dc=True."""
+        f0 = 25.0
+        sr = 10000.0
+        dur = 5.0
+        amp = 2.0
+        phase = 30.0
+
+        trigger = make_trigger(f0, sr, dur)
+        signal = make_vibration(f0, amp, phase, sr, dur) + 5.0  # DC offset
+
+        method = IQDemodulation(remove_dc=True)
+        amp_out, phase_out = method.extract(signal, trigger, sr, f0)
+        assert np.isclose(amp_out, amp, rtol=0.05)
+        assert np.isclose(phase_out, phase, atol=5.0)
+
+    def test_short_signal_raises(self):
+        """Signal shorter than one period with trim_periods=True should raise."""
+        f0 = 25.0
+        sr = 10000.0
+        # Less than one period (1/25 = 0.04 s)
+        dur = 0.03
+
+        trigger = make_trigger(f0, sr, dur)
+        signal = make_vibration(f0, 1.0, 0.0, sr, dur)
+
+        method = IQDemodulation(trim_periods=True)
+        with pytest.raises(ValueError, match="shorter than one period"):
+            method.extract(signal, trigger, sr, f0)
+
+    def test_end_to_end_with_vibration_extractor(self):
+        """IQDemodulation plugged into VibrationExtractor should work."""
+        f0 = 25.0
+        sr = 10000.0
+        dur = 5.0
+        amp = 1.5
+        phase = -45.0
+
+        trigger = make_trigger(f0, sr, dur)
+        signal = make_vibration(f0, amp, phase, sr, dur)
+
+        extractor = VibrationExtractor(
+            sample_rate=sr, rotation_freq=f0, method=IQDemodulation(),
+        )
+        vv = extractor.get_vibration_vector(signal, trigger)
+
+        assert isinstance(vv, VibrationVector)
+        assert np.isclose(vv.amplitude, amp, rtol=0.05)
+        expected_phase = phase % 360  # -45 -> 315
+        assert np.isclose(vv.phase, expected_phase, atol=5.0)

@@ -101,3 +101,13 @@ FFTExtraction
    :special-members: __init__
    :undoc-members:
    :show-inheritance:
+
+
+IQDemodulation
+--------------
+
+.. autoclass:: pyPRB.IQDemodulation
+   :members:
+   :special-members: __init__
+   :undoc-members:
+   :show-inheritance:

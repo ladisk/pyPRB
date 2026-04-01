@@ -17,6 +17,7 @@ averages revolution-locked signal segments and extracts the fundamental
 
 from ._vibration_extractor import ExtractionMethod, VibrationExtractor, detect_rotation_freq
 from .fft_extraction import FFTExtraction
+from .iq_demodulation import IQDemodulation
 from .synchronous_averaging import SynchronousAveraging
 
 __all__ = [
@@ -24,5 +25,6 @@ __all__ = [
     "VibrationExtractor",
     "detect_rotation_freq",
     "FFTExtraction",
+    "IQDemodulation",
     "SynchronousAveraging",
 ]

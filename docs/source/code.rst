@@ -83,26 +83,6 @@ ExtractionMethod
    :show-inheritance:
 
 
-SynchronousAveraging
---------------------
-
-.. autoclass:: pyPRB.SynchronousAveraging
-   :members:
-   :special-members: __init__
-   :undoc-members:
-   :show-inheritance:
-
-
-FFTExtraction
--------------
-
-.. autoclass:: pyPRB.FFTExtraction
-   :members:
-   :special-members: __init__
-   :undoc-members:
-   :show-inheritance:
-
-
 IQDemodulation
 --------------
 
@@ -117,6 +97,26 @@ LeastSquaresFit
 ---------------
 
 .. autoclass:: pyPRB.LeastSquaresFit
+   :members:
+   :special-members: __init__
+   :undoc-members:
+   :show-inheritance:
+
+
+SynchronousAveraging
+--------------------
+
+.. autoclass:: pyPRB.SynchronousAveraging
+   :members:
+   :special-members: __init__
+   :undoc-members:
+   :show-inheritance:
+
+
+FFTExtraction
+-------------
+
+.. autoclass:: pyPRB.FFTExtraction
    :members:
    :special-members: __init__
    :undoc-members:

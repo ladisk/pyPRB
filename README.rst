@@ -12,8 +12,9 @@ Features
 * **StaticBalancing**: Single-plane balancing for rotors
 * **DynamicBalancing**: Two-plane balancing for rotors
 * **VibrationExtractor**: Extracts vibration vectors from time-domain signals
-* **SynchronousAveraging**: Revolution-locked averaging for fundamental extraction
 * **detect_rotation_freq**: Detects rotation frequency from a trigger signal
+* Four pluggable extraction methods: **IQDemodulation** (default),
+  **LeastSquaresFit**, **SynchronousAveraging**, **FFTExtraction**
 
 Installation
 ------------
@@ -118,8 +119,8 @@ Extracting Vibration Vectors from Measurements
 
     import numpy as np
     from pyPRB import (
-        VibrationExtractor, SynchronousAveraging,
-        detect_rotation_freq, MassVector, StaticBalancing,
+        VibrationExtractor, detect_rotation_freq,
+        MassVector, StaticBalancing,
     )
 
     # Synthetic signals (B&K Example 2)
@@ -138,7 +139,7 @@ Extracting Vibration Vectors from Measurements
     # 1. Detect rotation frequency from the trigger signal
     f0 = detect_rotation_freq(trigger, sample_rate=sample_rate, max_freq=50.0)
 
-    # 2. Create extractor (default method: synchronous averaging)
+    # 2. Create extractor (default method: IQ demodulation)
     extractor = VibrationExtractor(sample_rate=sample_rate, rotation_freq=f0)
 
     # 3. Extract vibration vectors for each measurement run

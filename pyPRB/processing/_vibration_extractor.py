@@ -284,7 +284,7 @@ class VibrationExtractor:
         unknown.
     method : ExtractionMethod, optional
         Extraction method to use.  Defaults to
-        :class:`SynchronousAveraging` with default settings.
+        :class:`IQDemodulation` with default settings.
 
     Examples
     --------
@@ -309,8 +309,8 @@ class VibrationExtractor:
         self.sample_rate = float(sample_rate)
         self.rotation_freq = float(rotation_freq)
         if method is None:
-            from .synchronous_averaging import SynchronousAveraging
-            method = SynchronousAveraging()
+            from .iq_demodulation import IQDemodulation
+            method = IQDemodulation()
         self.method = method
 
     def get_vibration_vector(

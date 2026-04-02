@@ -822,7 +822,6 @@ class TestDetectRotationFreq:
 
 
 class TestVibrationExtractor:
-    SA_OFFSET = SA_CROSSING_OFFSET
 
     def test_get_vibration_vector(self):
         """End-to-end: synthetic signals -> VibrationVector."""
@@ -832,7 +831,7 @@ class TestVibrationExtractor:
         amp = 1.5
         phase = -45.0
 
-        trigger = make_trigger(f0, sr, dur, phase_deg=self.SA_OFFSET)
+        trigger = make_trigger(f0, sr, dur)
         signal = make_vibration(f0, amp, phase, sr, dur, noise_level=0.01)
 
         extractor = VibrationExtractor(sample_rate=sr, rotation_freq=f0)
@@ -874,7 +873,7 @@ class TestVibrationExtractor:
         amp = 2.0
         phase = 60.0
 
-        trigger = make_trigger(f0, sr, dur, phase_deg=self.SA_OFFSET)
+        trigger = make_trigger(f0, sr, dur)
         signal = make_vibration(f0, amp, phase, sr, dur, noise_level=0.01)
 
         detected = detect_rotation_freq(trigger, sample_rate=sr, max_freq=50.0)

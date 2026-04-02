@@ -6,10 +6,11 @@ This example demonstrates the full workflow using synthetic signals:
 3. Extract vibration vectors for each measurement run
 4. Pass them to StaticBalancing to compute the correction mass
 
-Three extraction methods are compared side by side:
+Four extraction methods are compared side by side:
 - SynchronousAveraging (time-domain, trigger-crossing based)
 - FFTExtraction (frequency-domain, phase subtraction)
 - IQDemodulation (lock-in amplification, cosine/sine correlation)
+- LeastSquaresFit (least-squares sine fit, optimal under Gaussian noise)
 """
 
 import numpy as np
@@ -18,6 +19,7 @@ from pyPRB import (
     SynchronousAveraging,
     FFTExtraction,
     IQDemodulation,
+    LeastSquaresFit,
     detect_rotation_freq,
     MassVector,
     StaticBalancing,
@@ -104,3 +106,21 @@ balancer_iq = StaticBalancing(V_0_iq, V_1_iq, trial_mass=trial_mass)
 print(balancer_iq)
 comp_iq = balancer_iq.compute_compensation()
 print(f"Result: {comp_iq}")
+
+# -- Method 4: Least-Squares Fit ----------------------------------------------
+print("\n--- Least-Squares Fit ---")
+
+method_ls = LeastSquaresFit(fit_dc=True, plotting=True)
+extractor_ls = VibrationExtractor(sample_rate=sample_rate, rotation_freq=detected_freq,
+                                  method=method_ls)
+
+V_0_ls = extractor_ls.get_vibration_vector(signal_0, trigger)
+V_1_ls = extractor_ls.get_vibration_vector(signal_1, trigger)
+
+print(f"V_0 = {V_0_ls}")
+print(f"V_1 = {V_1_ls}")
+
+balancer_ls = StaticBalancing(V_0_ls, V_1_ls, trial_mass=trial_mass)
+print(balancer_ls)
+comp_ls = balancer_ls.compute_compensation()
+print(f"Result: {comp_ls}")

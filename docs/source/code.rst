@@ -111,3 +111,13 @@ IQDemodulation
    :special-members: __init__
    :undoc-members:
    :show-inheritance:
+
+
+LeastSquaresFit
+---------------
+
+.. autoclass:: pyPRB.LeastSquaresFit
+   :members:
+   :special-members: __init__
+   :undoc-members:
+   :show-inheritance:

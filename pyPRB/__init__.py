@@ -50,7 +50,7 @@ Dynamic balancing:
 """
 
 from .core import VibrationVector, MassVector, StaticBalancing, DynamicBalancing
-from .processing import VibrationExtractor, SynchronousAveraging, FFTExtraction, IQDemodulation, detect_rotation_freq
+from .processing import VibrationExtractor, SynchronousAveraging, FFTExtraction, IQDemodulation, LeastSquaresFit, detect_rotation_freq
 from .__version__ import __version__, __author__, __email__
 
 # Define what gets imported with "from pyPRB import *"
@@ -63,6 +63,7 @@ __all__ = [
     'SynchronousAveraging',
     'FFTExtraction',
     'IQDemodulation',
+    'LeastSquaresFit',
     'detect_rotation_freq',
     '__version__',
 ]

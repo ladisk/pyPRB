@@ -484,3 +484,204 @@ class DynamicBalancing:
             print(table)
 
         return comp_1, comp_2
+
+
+class MultiPlaneBalancing:
+    """Performs multi-plane balancing with the influence coefficient method.
+
+    Generalises :class:`StaticBalancing` (one plane) and
+    :class:`DynamicBalancing` (two planes) to an arbitrary number of
+    correction planes ``N`` and measurement points ``M``.  Each run adds a
+    trial mass to one correction plane; vibration is measured at all ``M``
+    measurement points in every run.
+
+    Parameters
+    ----------
+    V_0 : sequence of VibrationVector
+        Initial run (no trial masses), one vector per measurement point
+        (length ``M``).
+    V_trial : sequence of sequences of VibrationVector
+        Trial runs.  ``V_trial[j][i]`` is the vibration at measurement
+        point ``i`` with the trial mass mounted in correction plane ``j``.
+        Shape ``N`` x ``M``.
+    trial_masses : sequence of MassVector
+        Trial mass used in each correction plane (length ``N``), with
+        amplitude (mass value) and phase (angular position on the rotor
+        where it was mounted).
+
+    Notes
+    -----
+    The influence coefficient of correction plane ``j`` on measurement
+    point ``i`` is
+
+    .. math::
+
+        \\alpha_{ij} = \\frac{V_{ij} - V_{i0}}{T_j},
+
+    where :math:`T_j` is the trial mass of plane ``j`` written as a complex
+    number.  The compensation masses :math:`W` follow from
+
+    .. math::
+
+        \\boldsymbol{\\alpha} \\, \\mathbf{W} = -\\mathbf{V}_0 .
+
+    For ``M == N`` the system is solved exactly; for ``M > N`` (more
+    measurement points than correction planes) the least-squares solution
+    is returned, which minimises the sum of squared residual vibration
+    amplitudes.  ``M < N`` is not allowed, because the compensation masses
+    are then not uniquely determined.
+
+    With ``N == 1`` and ``M == 1`` the result equals
+    :class:`StaticBalancing`; with ``N == M == 2`` it equals
+    :class:`DynamicBalancing`.
+
+    Trial masses in all planes must use the same units. No unit conversion
+    is performed.
+
+    Examples
+    --------
+    Two-plane example 4 from the B&K application note:
+
+    >>> V_0 = [VibrationVector(7.2, 238), VibrationVector(13.5, 296)]
+    >>> V_trial = [
+    ...     [VibrationVector(4.9, 114), VibrationVector(9.2, 347)],  # plane 1
+    ...     [VibrationVector(4.0, 79), VibrationVector(12.0, 292)],  # plane 2
+    ... ]
+    >>> trial_masses = [MassVector(2.5, 0.0), MassVector(2.5, 0.0)]
+    >>> balancer = MultiPlaneBalancing(V_0, V_trial, trial_masses)
+    >>> comp = balancer.compute_compensation(repr=False)
+    >>> print(comp[0])
+    MassVector(amplitude=2.95138, phase=50.1889°, units='g')
+    >>> print(comp[1])
+    MassVector(amplitude=2.84414, phase=-81.8841°, units='g')
+    """
+
+    def __init__(self, V_0, V_trial, trial_masses):
+        V_0 = list(V_0)
+        V_trial = [list(run) for run in V_trial]
+        trial_masses = list(trial_masses)
+
+        n_sensors = len(V_0)
+        n_planes = len(trial_masses)
+        if n_planes == 0 or n_sensors == 0:
+            raise ValueError(
+                "At least one correction plane and one measurement point "
+                "are required.")
+        if len(V_trial) != n_planes:
+            raise ValueError(
+                f"Number of trial runs ({len(V_trial)}) must match the number "
+                f"of trial masses ({n_planes}).")
+        for j, run in enumerate(V_trial):
+            if len(run) != n_sensors:
+                raise ValueError(
+                    f"Trial run {j + 1} has {len(run)} measurements, expected "
+                    f"{n_sensors} (one per measurement point in V_0).")
+        if n_sensors < n_planes:
+            raise ValueError(
+                f"Number of measurement points ({n_sensors}) must be at "
+                f"least the number of correction planes ({n_planes}).")
+        units = {tm.units for tm in trial_masses}
+        if len(units) > 1:
+            raise ValueError(
+                f"Trial mass units must match: got {sorted(units)}. "
+                "No unit conversion is performed.")
+
+        self.V_0 = V_0
+        self.V_trial = V_trial
+        self.trial_masses = trial_masses
+        self.n_planes = n_planes
+        self.n_sensors = n_sensors
+
+    def __repr__(self) -> str:
+        """Return a formatted table representation of the balancing data."""
+        def cell(v):
+            return f"{v.amplitude:g} @ {v.phase:g}°"
+
+        data = [["None"] + [cell(v) for v in self.V_0]]
+        for j, (tm, run) in enumerate(zip(self.trial_masses, self.V_trial)):
+            data.append(
+                [f"{tm.amplitude:g} {tm.units} @ {tm.phase:g}° on Plane {j + 1}"]
+                + [cell(v) for v in run])
+        headers = (["Trial Mass\nSize and Location"]
+                   + [f"Vibration\n(Point {i + 1})"
+                      for i in range(self.n_sensors)])
+        table = tabulate(data,
+                         headers=headers,
+                         tablefmt="grid",
+                         stralign="center",
+                         numalign="center")
+        title = "Multi-Plane Balancing - Measured Vibration Data"
+        separator = "=" * 80
+        return f"\n{separator}\n{title}\n{separator}\n{table}\n{separator}"
+
+    @property
+    def influence_coefficients(self) -> np.ndarray:
+        """Influence coefficient matrix (``M`` x ``N``, complex).
+
+        Element ``[i, j]`` is the vibration at measurement point ``i`` caused
+        by a unit mass mounted at 0° in correction plane ``j``.
+        """
+        V_0 = np.array([v.complex_num for v in self.V_0])
+        alpha = np.empty((self.n_sensors, self.n_planes), dtype=complex)
+        for j, (run, tm) in enumerate(zip(self.V_trial, self.trial_masses)):
+            V_j = np.array([v.complex_num for v in run])
+            T_j = tm.amplitude * np.exp(1j * np.deg2rad(tm.phase))
+            alpha[:, j] = (V_j - V_0) / T_j
+        return alpha
+
+    def _solve(self) -> np.ndarray:
+        """Return compensation masses as complex numbers (length ``N``)."""
+        alpha = self.influence_coefficients
+        V_0 = np.array([v.complex_num for v in self.V_0])
+        W, _, rank, _ = np.linalg.lstsq(alpha, -V_0, rcond=None)
+        if rank < self.n_planes:
+            raise ValueError(
+                "Influence coefficient matrix is rank deficient: the trial "
+                "runs do not distinguish all correction planes.")
+        return W
+
+    def compute_compensation(self, repr: bool = True) -> list:
+        """Calculate compensating masses and positions for all planes.
+
+        Parameters
+        ----------
+        repr : bool, optional
+            If ``True``, print the compensation details.  Default is ``True``.
+
+        Returns
+        -------
+        list of MassVector
+            Compensating mass for each correction plane (length ``N``) with
+            absolute angular position on the rotor.
+        """
+        W = self._solve()
+        units = self.trial_masses[0].units
+        result = [MassVector(np.abs(w), np.rad2deg(np.angle(w)), units)
+                  for w in W]
+
+        if repr:
+            data = [[f"{j + 1}", f"{m.amplitude:.2f} {m.units}",
+                     f"{m.phase:.1f}°"] for j, m in enumerate(result)]
+            headers = ["Plane", "Compensation Mass", "Position"]
+            print(tabulate(data,
+                           headers=headers,
+                           tablefmt="grid",
+                           stralign="center",
+                           numalign="center"))
+
+        return result
+
+    def residual_vibration(self) -> list:
+        """Predict the vibration after mounting the compensation masses.
+
+        For ``M == N`` the prediction is zero (up to round-off); for
+        ``M > N`` it is the least-squares residual.
+
+        Returns
+        -------
+        list of VibrationVector
+            Predicted vibration at each measurement point (length ``M``).
+        """
+        V_0 = np.array([v.complex_num for v in self.V_0])
+        residual = V_0 + self.influence_coefficients @ self._solve()
+        return [VibrationVector.from_complex(z) for z in residual]

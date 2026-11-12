@@ -20,6 +20,9 @@ StaticBalancing
 DynamicBalancing
     Performs two-plane (dynamic) balancing calculations.
 
+MultiPlaneBalancing
+    Performs balancing in an arbitrary number of correction planes.
+
 Examples
 --------
 Static balancing:
@@ -49,7 +52,7 @@ Dynamic balancing:
 >>> comp_mass_1, comp_mass_2 = balancer.compute_compensation()
 """
 
-from .core import VibrationVector, MassVector, StaticBalancing, DynamicBalancing
+from .core import VibrationVector, MassVector, StaticBalancing, DynamicBalancing, MultiPlaneBalancing
 from .processing import VibrationExtractor, IQDemodulation, LeastSquaresFit, SynchronousAveraging, FFTExtraction, detect_rotation_freq
 from .__version__ import __version__, __author__, __email__
 
@@ -59,6 +62,7 @@ __all__ = [
     'MassVector',
     'StaticBalancing',
     'DynamicBalancing',
+    'MultiPlaneBalancing',
     'VibrationExtractor',
     'IQDemodulation',
     'LeastSquaresFit',

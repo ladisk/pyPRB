@@ -44,6 +44,16 @@ DynamicBalancing
    :show-inheritance:
 
 
+MultiPlaneBalancing
+-------------------
+
+.. autoclass:: pyPRB.MultiPlaneBalancing
+   :members:
+   :special-members: __init__, __repr__
+   :undoc-members:
+   :show-inheritance:
+
+
 Signal Processing
 =================
 

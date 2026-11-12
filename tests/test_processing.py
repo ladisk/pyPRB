@@ -1008,3 +1008,77 @@ class TestCrossMethodAgreement:
         # All phases should agree within 5 degrees
         for p in [iq_phase, ls_phase, sa_phase, fft_phase]:
             assert np.isclose(p, phase, atol=5.0)
+
+
+# ===========================================================================
+# Angle convention
+# ===========================================================================
+
+class TestExtractorAngleConvention:
+    """Phase lead (with rotation) or phase lag (against rotation)."""
+
+    def test_phase_lag(self):
+        """The against-rotation phase is the lag: 360° minus the lead."""
+        f0, sr, dur = 25.0, 10000.0, 4.0
+        trigger = make_trigger(f0, sr, dur)
+        signal = make_vibration(f0, 2.0, 70.0, sr, dur)
+        lead = VibrationExtractor(sr, f0).get_vibration_vector(
+            signal, trigger)
+        lag = VibrationExtractor(
+            sr, f0, angle_convention="against_rotation"
+        ).get_vibration_vector(signal, trigger)
+        assert np.isclose(lead.phase, 70.0, atol=0.5)
+        assert np.isclose(lag.phase, 290.0, atol=0.5)
+        assert np.isclose(lag.amplitude, lead.amplitude)
+
+    def test_default_and_invalid(self):
+        extractor = VibrationExtractor(10000, 25.0)
+        assert extractor.angle_convention == "with_rotation"
+        with pytest.raises(ValueError, match="angle_convention must be one"):
+            VibrationExtractor(10000, 25.0, angle_convention="clockwise")
+
+    @pytest.mark.parametrize("method_cls", [IQDemodulation, LeastSquaresFit,
+                                            FFTExtraction])
+    def test_same_physical_correction_from_signals(self, method_cls):
+        """Signals -> correction: the same place on the rotor both ways.
+
+        A heavy spot of 3 g sits 140° ahead of the mark (in the direction
+        of rotation); the trial mass of 2 g is mounted 60° ahead of the
+        mark.  One user counts with the rotation, the other against it.
+        Both must be told to add 3 g opposite the heavy spot.
+        """
+        from pyPRB import MassVector, StaticBalancing, convert_convention
+        f0, sr, dur = 25.0, 10000.0, 4.0
+        heavy = 3.0 * np.exp(1j * np.deg2rad(140.0))
+        trial = 2.0 * np.exp(1j * np.deg2rad(60.0))
+        response = 0.8 * np.exp(1j * np.deg2rad(-35.0))  # per gram, with lag
+
+        def record(unbalance):
+            v = response * unbalance
+            return make_vibration(f0, abs(v), np.rad2deg(np.angle(v)),
+                                  sr, dur)
+
+        trigger = make_trigger(f0, sr, dur)
+        run_0, run_1 = record(heavy), record(heavy + trial)
+
+        results = {}
+        for convention, trial_position in (("with_rotation", 60.0),
+                                           ("against_rotation", 300.0)):
+            extractor = VibrationExtractor(sr, f0, method=method_cls(),
+                                           angle_convention=convention)
+            balancer = StaticBalancing(
+                extractor.get_vibration_vector(run_0, trigger),
+                extractor.get_vibration_vector(run_1, trigger),
+                MassVector(2.0, trial_position),
+                angle_convention=convention)
+            results[convention] = balancer.compute_compensation(repr=False)
+
+        with_rot = results["with_rotation"]
+        against = results["against_rotation"]
+        assert np.isclose(with_rot.amplitude, 3.0, rtol=1e-3)
+        assert np.isclose(with_rot.phase, 140.0 - 180.0, atol=0.1)
+        assert np.isclose(against.amplitude, 3.0, rtol=1e-3)
+        assert np.isclose(against.phase, 40.0, atol=0.1)       # 360° - 320°
+        back = convert_convention(against, "against_rotation",
+                                  "with_rotation")
+        assert np.isclose(back.phase, with_rot.phase, atol=1e-6)

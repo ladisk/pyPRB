@@ -17,6 +17,8 @@ Features
   stored and loaded as plain data, corrections and trim corrections without
   trial runs, predicted vibration for the weights actually fitted, residual
   unbalance of a reading and a conditioning check
+* **Angle convention**: angles counted with (default) or against the
+  direction of rotation, with **convert_angle** and **convert_convention**
 * **VibrationExtractor**: Extracts vibration vectors from time-domain signals
 * **detect_rotation_freq**: Detects rotation frequency from a trigger signal
 * Four pluggable extraction methods: **IQDemodulation** (default),
@@ -202,6 +204,51 @@ one reading and no trial runs.
     heavy_spots = coefficients.residual_unbalance(check)
 
     coefficients.check_conditioning()   # warns if the planes are hard to separate
+
+
+Angle Convention
+~~~~~~~~~~~~~~~~
+
+By default all angles are counted from the trigger/datum mark **in the
+direction of rotation** (``angle_convention="with_rotation"``). Many
+balancing instruments count **against** the rotation and show the phase as
+a lag. Seen from the side on which the rotor turns counter-clockwise::
+
+        "with_rotation"                 "against_rotation"
+
+             90°                              270°
+              |                                |
+      180° ---+--- 0° (mark)          180° ---+--- 0° (mark)
+              |                                |
+             270°                             90°
+
+        rotation: counter-clockwise in both pictures
+
+A convention covers the phase readings and the weight positions together;
+the result is in the convention of the input. The same physical case gives
+the same place on the rotor either way:
+
+.. code-block:: python
+
+    from pyPRB import (VibrationVector, MassVector, StaticBalancing,
+                       convert_angle, convert_convention)
+
+    # Readings and trial position as an instrument shows them
+    balancer = StaticBalancing(
+        VibrationVector(3.4, 244), VibrationVector(1.8, 318),
+        trial_mass=MassVector(2.0, 0.0),
+        angle_convention="against_rotation")
+    comp = balancer.compute_compensation()
+    # Compensation mass: 2.01 g at position 30.8° on the rotor
+    # (angles measured against the direction of rotation).
+
+    convert_convention(comp, "against_rotation", "with_rotation")
+    # MassVector(amplitude=2.01168, phase=-30.7888°, units='g')
+    convert_angle(244, "against_rotation", "with_rotation")   # 116.0
+
+``VibrationExtractor(..., angle_convention="against_rotation")`` returns
+the phase lag, and ``InfluenceCoefficients.to_convention()`` converts
+stored coefficients.
 
 
 Extracting Vibration Vectors from Measurements

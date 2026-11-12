@@ -9,12 +9,129 @@ Angle convention
 All angles follow the rotor datum convention: 0° is at the trigger/datum
 mark on the rotor, and positive angles are measured in the direction of
 rotation.
+
+This is the default, ``angle_convention="with_rotation"``.  Many balancing
+instruments count the other way: angles on the rotor are measured from the
+mark *against* the direction of rotation, and the phase reading is a phase
+lag.  The balancing classes, :class:`InfluenceCoefficients` and the
+vibration extractor accept ``angle_convention="against_rotation"`` for
+that.  Seen from the side on which the rotor turns counter-clockwise::
+
+        "with_rotation"                 "against_rotation"
+
+             90°                              270°
+              |                                |
+      180° ---+--- 0° (mark)          180° ---+--- 0° (mark)
+              |                                |
+             270°                             90°
+
+        rotation: counter-clockwise in both pictures
+
+A point at 90° in the left picture passes a fixed sensor a quarter of a
+turn *before* the mark does (its vibration leads the trigger by 90°); the
+same point is called 270° in the right picture, and its vibration lags the
+trigger by 270°.
+
+A convention covers the phase readings *and* the weight positions
+together.  The balancing calculation is the same for both: readings and
+positions given in one convention give corrections in that convention.
+The option records which one is in use, labels the printed results,
+makes the vibration extractor return phases to match, and lets stored
+influence coefficients be converted.  Use :func:`convert_angle` and
+:func:`convert_convention` to go from one to the other.
 """
 
 import warnings
 
 import numpy as np
 from tabulate import tabulate
+
+
+WITH_ROTATION = "with_rotation"
+AGAINST_ROTATION = "against_rotation"
+ANGLE_CONVENTIONS = (WITH_ROTATION, AGAINST_ROTATION)
+
+
+def _check_convention(angle_convention: str) -> str:
+    """Return a valid angle convention or raise ``ValueError``."""
+    if angle_convention not in ANGLE_CONVENTIONS:
+        raise ValueError(
+            f"angle_convention must be one of {ANGLE_CONVENTIONS}, "
+            f"got {angle_convention!r}.")
+    return angle_convention
+
+
+def _convention_note(angle_convention: str) -> str:
+    """Return the text added to printed results (empty for the default)."""
+    if angle_convention == AGAINST_ROTATION:
+        return "angles measured against the direction of rotation"
+    return ""
+
+
+def convert_angle(angle: float, from_convention: str,
+                  to_convention: str) -> float:
+    """Convert an angle between the two angle conventions.
+
+    Both conventions have 0° at the trigger/datum mark; they differ in the
+    direction in which the angle grows.  The same holds for a phase
+    reading (phase lead with the rotation, phase lag against it).
+
+    Parameters
+    ----------
+    angle : float
+        Angle or phase in degrees.
+    from_convention, to_convention : {"with_rotation", "against_rotation"}
+        Convention of the given angle and of the result.
+
+    Returns
+    -------
+    float
+        The angle in degrees in the range [0, 360).
+
+    Examples
+    --------
+    >>> convert_angle(30.0, "with_rotation", "against_rotation")
+    330.0
+    >>> convert_angle(30.0, "against_rotation", "against_rotation")
+    30.0
+    """
+    _check_convention(from_convention)
+    _check_convention(to_convention)
+    if from_convention != to_convention:
+        angle = -angle
+    return float(angle % 360)
+
+
+def convert_convention(vector, from_convention: str, to_convention: str):
+    """Convert a vibration or mass vector between the angle conventions.
+
+    Parameters
+    ----------
+    vector : VibrationVector or MassVector
+        A phase reading or a weight position.
+    from_convention, to_convention : {"with_rotation", "against_rotation"}
+        Convention of the given vector and of the result.
+
+    Returns
+    -------
+    VibrationVector or MassVector
+        A new vector of the same type, amplitude and units.
+
+    Examples
+    --------
+    >>> reading = VibrationVector(3.4, 244)       # as shown by an instrument
+    >>> print(convert_convention(reading, "against_rotation", "with_rotation"))
+    VibrationVector(amplitude=3.4, phase=116°)
+    >>> weight = MassVector(2.0, 30.8)
+    >>> print(convert_convention(weight, "against_rotation", "with_rotation"))
+    MassVector(amplitude=2, phase=-30.8°, units='g')
+    """
+    if not isinstance(vector, (VibrationVector, MassVector)):
+        raise TypeError("Expected a VibrationVector or a MassVector.")
+    phase = convert_angle(vector.phase, from_convention, to_convention)
+    if isinstance(vector, MassVector):
+        return MassVector(vector.amplitude, phase, vector.units)
+    return VibrationVector(vector.amplitude, phase)
 
 
 def _as_complex(vector) -> complex:
@@ -211,6 +328,10 @@ class StaticBalancing:
     trial_mass : MassVector
         Trial mass used, with amplitude (mass value) and phase (angular
         position on the rotor where it was mounted).
+    angle_convention : {"with_rotation", "against_rotation"}, optional
+        Direction in which the phases of the readings and the positions of
+        the masses are counted from the mark (see the module description).
+        Default is "with_rotation".  The result is in the same convention.
 
     Examples
     --------
@@ -223,10 +344,12 @@ class StaticBalancing:
     """
 
     def __init__(self, V_0: VibrationVector, V_1: VibrationVector,
-                 trial_mass: MassVector):
+                 trial_mass: MassVector,
+                 angle_convention: str = WITH_ROTATION):
         self.V_0 = V_0
         self.V_1 = V_1
         self.trial_mass = trial_mass
+        self.angle_convention = _check_convention(angle_convention)
 
     def __repr__(self) -> str:
         """Return a formatted table representation of the balancing data.
@@ -254,6 +377,8 @@ class StaticBalancing:
 
         # Add title
         title = "Static Balancing - Measured Vibration Data"
+        if _convention_note(self.angle_convention):
+            title += f"\n({_convention_note(self.angle_convention)})"
         separator = "=" * 80
 
         return f"\n{separator}\n{title}\n{separator}\n{table}\n{separator}"
@@ -291,9 +416,11 @@ class StaticBalancing:
         result = MassVector(compensation_mass, absolute_position,
                             self.trial_mass.units)
         if repr:
+            note = _convention_note(self.angle_convention)
             print(
                 f"Compensation mass: {result.amplitude:.2f} {result.units} "
-                f"at position {result.phase:.1f}° on the rotor.")
+                f"at position {result.phase:.1f}° on the rotor"
+                + (f" ({note})." if note else "."))
 
         return result
 
@@ -325,6 +452,10 @@ class DynamicBalancing:
     trial_mass_2 : MassVector
         Trial mass used in plane 2, with amplitude (mass value) and phase
         (angular position on the rotor where it was mounted).
+    angle_convention : {"with_rotation", "against_rotation"}, optional
+        Direction in which the phases of the readings and the positions of
+        the masses are counted from the mark (see the module description).
+        Default is "with_rotation".  The result is in the same convention.
 
     Notes
     -----
@@ -363,7 +494,9 @@ class DynamicBalancing:
     def __init__(self, V_1_0: VibrationVector, V_2_0: VibrationVector,
                  V_1_1: VibrationVector, V_2_1: VibrationVector,
                  V_1_2: VibrationVector, V_2_2: VibrationVector,
-                 trial_mass_1: MassVector, trial_mass_2: MassVector):
+                 trial_mass_1: MassVector, trial_mass_2: MassVector,
+                 angle_convention: str = WITH_ROTATION):
+        self.angle_convention = _check_convention(angle_convention)
         if trial_mass_1.units != trial_mass_2.units:
             raise ValueError(
                 f"Trial mass units must match: got '{trial_mass_1.units}' "
@@ -419,6 +552,8 @@ class DynamicBalancing:
 
         # Add title
         title = "Dynamic Balancing - Measured Vibration Data"
+        if _convention_note(self.angle_convention):
+            title += f"\n({_convention_note(self.angle_convention)})"
         separator = "=" * 80
 
         return f"\n{separator}\n{title}\n{separator}\n{table}\n{separator}"
@@ -497,6 +632,8 @@ class DynamicBalancing:
                              stralign="center",
                              numalign="center")
             print(table)
+            if _convention_note(self.angle_convention):
+                print(f"({_convention_note(self.angle_convention)})")
 
         return comp_1, comp_2
 
@@ -543,6 +680,10 @@ class MultiPlaneBalancing:
         exceeds this value, :class:`IllConditionedWarning` is issued when
         the compensation is computed, by default 100.  ``None`` disables
         the check.
+    angle_convention : {"with_rotation", "against_rotation"}, optional
+        Direction in which the phases of the readings and the positions of
+        the masses are counted from the mark (see the module description).
+        Default is "with_rotation".  The result is in the same convention.
 
     Notes
     -----
@@ -608,7 +749,9 @@ class MultiPlaneBalancing:
     """
 
     def __init__(self, V_0, V_trial, trial_masses, trial_left_on=False,
-                 max_condition_number=100.0):
+                 max_condition_number=100.0,
+                 angle_convention=WITH_ROTATION):
+        self.angle_convention = _check_convention(angle_convention)
         V_0 = list(V_0)
         V_trial = [list(run) for run in V_trial]
         trial_masses = list(trial_masses)
@@ -670,6 +813,8 @@ class MultiPlaneBalancing:
         title = "Multi-Plane Balancing - Measured Vibration Data"
         if self.trial_left_on:
             title += "\n(each trial mass left on for the following runs)"
+        if _convention_note(self.angle_convention):
+            title += f"\n({_convention_note(self.angle_convention)})"
         separator = "=" * 80
         return f"\n{separator}\n{title}\n{separator}\n{table}\n{separator}"
 
@@ -721,7 +866,8 @@ class MultiPlaneBalancing:
         return InfluenceCoefficients(
             self.influence_coefficients,
             units=self.trial_masses[0].units,
-            max_condition_number=max_condition_number)
+            max_condition_number=max_condition_number,
+            angle_convention=self.angle_convention)
 
     def _solve(self) -> np.ndarray:
         """Return compensation masses as complex numbers (length ``N``).
@@ -806,6 +952,8 @@ class MultiPlaneBalancing:
                            tablefmt="grid",
                            stralign="center",
                            numalign="center"))
+            if _convention_note(self.angle_convention):
+                print(f"({_convention_note(self.angle_convention)})")
 
         return result
 
@@ -856,6 +1004,11 @@ class InfluenceCoefficients:
         default is a pragmatic choice, not a published limit; ``None``
         switches the warning off.  A rank-deficient matrix always raises
         ``ValueError``.
+    angle_convention : {"with_rotation", "against_rotation"}, optional
+        Convention of the readings and mass positions the coefficients
+        were measured with (see the module description).  Default is
+        "with_rotation".  Readings and masses given to the methods must
+        use the same convention; :meth:`to_convention` converts.
 
     Attributes
     ----------
@@ -912,7 +1065,9 @@ class InfluenceCoefficients:
     """
 
     def __init__(self, matrix, units: str = "g",
-                 max_condition_number: 'float | None' = 100.0):
+                 max_condition_number: 'float | None' = 100.0,
+                 angle_convention: str = WITH_ROTATION):
+        self.angle_convention = _check_convention(angle_convention)
         matrix = np.array(matrix, dtype=complex)
         if matrix.ndim == 0:
             matrix = matrix.reshape(1, 1)
@@ -938,15 +1093,44 @@ class InfluenceCoefficients:
         self.n_sensors, self.n_planes = matrix.shape
 
     def __repr__(self) -> str:
-        return (f"InfluenceCoefficients(n_sensors={self.n_sensors}, "
-                f"n_planes={self.n_planes}, units='{self.units}')")
+        text = (f"InfluenceCoefficients(n_sensors={self.n_sensors}, "
+                f"n_planes={self.n_planes}, units='{self.units}'")
+        if self.angle_convention != WITH_ROTATION:
+            text += f", angle_convention='{self.angle_convention}'"
+        return text + ")"
+
+    def to_convention(self, angle_convention: str) -> 'InfluenceCoefficients':
+        """Return the coefficients for the other angle convention.
+
+        Use this when the coefficients were stored with one convention and
+        the readings of a new job use the other.
+
+        Parameters
+        ----------
+        angle_convention : {"with_rotation", "against_rotation"}
+            Convention of the result.
+
+        Returns
+        -------
+        InfluenceCoefficients
+            A new object.
+        """
+        _check_convention(angle_convention)
+        matrix = self.matrix
+        if angle_convention != self.angle_convention:
+            matrix = np.conj(matrix)
+        return InfluenceCoefficients(
+            matrix, units=self.units,
+            max_condition_number=self.max_condition_number,
+            angle_convention=angle_convention)
 
     # -- construction and storage ------------------------------------------
 
     @classmethod
     def from_trial_runs(cls, V_0, V_trial, trial_masses,
                         trial_left_on: bool = False,
-                        max_condition_number: 'float | None' = 100.0
+                        max_condition_number: 'float | None' = 100.0,
+                        angle_convention: str = WITH_ROTATION
                         ) -> 'InfluenceCoefficients':
         """Compute the coefficients from an initial run and trial runs.
 
@@ -969,6 +1153,8 @@ class InfluenceCoefficients:
             following runs.  Default is ``False``.
         max_condition_number : float or None, optional
             See the class description.
+        angle_convention : {"with_rotation", "against_rotation"}, optional
+            Convention of the readings and the trial mass positions.
 
         Returns
         -------
@@ -991,13 +1177,15 @@ class InfluenceCoefficients:
         if isinstance(V_trial, VibrationVector):
             V_trial = [[V_trial]]
         balancer = MultiPlaneBalancing(V_0, V_trial, trial_masses,
-                                       trial_left_on=trial_left_on)
+                                       trial_left_on=trial_left_on,
+                                       angle_convention=angle_convention)
         return balancer.get_influence_coefficients(
             max_condition_number=max_condition_number)
 
     @classmethod
     def from_amplitude_phase(cls, amplitude, phase, units: str = "g",
-                             max_condition_number: 'float | None' = 100.0
+                             max_condition_number: 'float | None' = 100.0,
+                             angle_convention: str = WITH_ROTATION
                              ) -> 'InfluenceCoefficients':
         """Create the coefficients from arrays of amplitude and phase.
 
@@ -1011,6 +1199,8 @@ class InfluenceCoefficients:
             Mass units, by default "g".
         max_condition_number : float or None, optional
             See the class description.
+        angle_convention : {"with_rotation", "against_rotation"}, optional
+            Convention the phases are given in.
 
         Returns
         -------
@@ -1025,7 +1215,8 @@ class InfluenceCoefficients:
         if np.any(amplitude < 0):
             raise ValueError("Amplitudes must be non-negative.")
         return cls(amplitude * np.exp(1j * np.deg2rad(phase)), units=units,
-                   max_condition_number=max_condition_number)
+                   max_condition_number=max_condition_number,
+                   angle_convention=angle_convention)
 
     def to_amplitude_phase(self) -> 'tuple[np.ndarray, np.ndarray]':
         """Return the coefficients as arrays of amplitude and phase.
@@ -1050,13 +1241,15 @@ class InfluenceCoefficients:
         -------
         dict
             Keys ``"amplitude"`` and ``"phase"`` (nested lists, ``M`` x
-            ``N``, phase in degrees) and ``"units"``.
+            ``N``, phase in degrees), ``"units"`` and
+            ``"angle_convention"``.
         """
         amplitude, phase = self.to_amplitude_phase()
         return {
             "amplitude": amplitude.tolist(),
             "phase": phase.tolist(),
             "units": self.units,
+            "angle_convention": self.angle_convention,
         }
 
     @classmethod
@@ -1069,7 +1262,8 @@ class InfluenceCoefficients:
         ----------
         data : dict
             Dictionary with the keys ``"amplitude"``, ``"phase"`` and,
-            optionally, ``"units"``.
+            optionally, ``"units"`` (default "g") and
+            ``"angle_convention"`` (default "with_rotation").
         max_condition_number : float or None, optional
             See the class description.
 
@@ -1079,7 +1273,8 @@ class InfluenceCoefficients:
         """
         return cls.from_amplitude_phase(
             data["amplitude"], data["phase"], units=data.get("units", "g"),
-            max_condition_number=max_condition_number)
+            max_condition_number=max_condition_number,
+            angle_convention=data.get("angle_convention", WITH_ROTATION))
 
     # -- checks --------------------------------------------------------------
 

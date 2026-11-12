@@ -4,6 +4,17 @@ Code documentation
 This page provides detailed documentation for all classes and methods in the
 rotor-balancing package.
 
+Angle convention
+----------------
+
+.. automodule:: pyPRB.core
+   :no-members:
+
+.. autofunction:: pyPRB.convert_angle
+
+.. autofunction:: pyPRB.convert_convention
+
+
 VibrationVector
 ---------------
 

@@ -61,6 +61,7 @@ Dynamic balancing:
 from .core import (VibrationVector, MassVector, StaticBalancing,
                    DynamicBalancing, MultiPlaneBalancing,
                    InfluenceCoefficients, IllConditionedWarning)
+from .core import convert_angle, convert_convention
 from .processing import VibrationExtractor, IQDemodulation, LeastSquaresFit, SynchronousAveraging, FFTExtraction, detect_rotation_freq
 from .__version__ import __version__, __author__, __email__
 
@@ -73,6 +74,8 @@ __all__ = [
     'MultiPlaneBalancing',
     'InfluenceCoefficients',
     'IllConditionedWarning',
+    'convert_angle',
+    'convert_convention',
     'VibrationExtractor',
     'IQDemodulation',
     'LeastSquaresFit',

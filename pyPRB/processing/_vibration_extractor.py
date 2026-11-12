@@ -6,7 +6,8 @@ import numpy as np
 
 from typing import Protocol, runtime_checkable
 
-from ..core import VibrationVector
+from ..core import AGAINST_ROTATION, WITH_ROTATION, VibrationVector
+from ..core import _check_convention
 
 
 @runtime_checkable
@@ -285,6 +286,13 @@ class VibrationExtractor:
     method : ExtractionMethod, optional
         Extraction method to use.  Defaults to
         :class:`IQDemodulation` with default settings.
+    angle_convention : {"with_rotation", "against_rotation"}, optional
+        With "with_rotation" (default) the phase of the returned vectors
+        is the angle by which the vibration leads the trigger, which goes
+        with weight positions counted in the direction of rotation.  With
+        "against_rotation" it is the phase lag, which goes with weight
+        positions counted against the direction of rotation, as many
+        balancing instruments do.
 
     Examples
     --------
@@ -298,7 +306,9 @@ class VibrationExtractor:
         sample_rate: float,
         rotation_freq: float,
         method: ExtractionMethod | None = None,
+        angle_convention: str = WITH_ROTATION,
     ):
+        self.angle_convention = _check_convention(angle_convention)
         if sample_rate <= 0:
             raise ValueError(f"sample_rate must be positive, got {sample_rate}.")
         if rotation_freq <= 0:
@@ -336,4 +346,6 @@ class VibrationExtractor:
         amplitude, phase_deg = self.method.extract(
             signal, trigger, self.sample_rate, self.rotation_freq
         )
+        if self.angle_convention == AGAINST_ROTATION:
+            phase_deg = -phase_deg
         return VibrationVector(amplitude=amplitude, phase=phase_deg)

@@ -5,7 +5,8 @@ import warnings
 
 from pyPRB import (DynamicBalancing, IllConditionedWarning,
                    InfluenceCoefficients, MassVector, MultiPlaneBalancing,
-                   StaticBalancing, VibrationVector)
+                   StaticBalancing, VibrationVector, convert_angle,
+                   convert_convention)
 
 
 class TestVibrationVector:
@@ -794,7 +795,7 @@ class TestInfluenceCoefficients:
         matrix = rng.normal(size=(4, 3)) + 1j * rng.normal(size=(4, 3))
         c = InfluenceCoefficients(matrix, units="oz")
         d = c.to_dict()
-        assert set(d) == {"amplitude", "phase", "units"}
+        assert set(d) == {"amplitude", "phase", "units", "angle_convention"}
         assert isinstance(d["amplitude"], list)
         back = InfluenceCoefficients.from_dict(d)
         assert np.allclose(back.matrix, matrix, rtol=1e-12, atol=1e-12)
@@ -904,3 +905,193 @@ class TestInfluenceCoefficients:
             c.predict_vibration(V, [MassVector(1, 0)])
         with pytest.raises(ValueError, match="units must match"):
             c.predict_vibration(V, [MassVector(1, 0, units="oz"), None])
+
+
+WITH, AGAINST = "with_rotation", "against_rotation"
+
+
+def _flip(vector):
+    """The same physical vector written in the other convention."""
+    return convert_convention(vector, WITH, AGAINST)
+
+
+class TestAngleConvention:
+    """Tests for angles counted with or against the direction of rotation."""
+
+    def test_convert_angle(self):
+        """Angles are mirrored about the mark and wrapped to [0, 360)."""
+        assert convert_angle(30.0, WITH, AGAINST) == 330.0
+        assert convert_angle(330.0, AGAINST, WITH) == 30.0
+        assert convert_angle(0.0, WITH, AGAINST) == 0.0
+        assert convert_angle(180.0, WITH, AGAINST) == 180.0
+        assert convert_angle(-30.0, WITH, WITH) == 330.0
+        for angle in (0.0, 12.5, 90.0, 200.0, 359.0):
+            there = convert_angle(angle, WITH, AGAINST)
+            assert np.isclose(convert_angle(there, AGAINST, WITH), angle)
+
+    def test_convert_convention_types(self):
+        """Vectors keep type, amplitude and units."""
+        v = convert_convention(VibrationVector(3.4, 116), WITH, AGAINST)
+        assert isinstance(v, VibrationVector)
+        assert v.amplitude == 3.4
+        assert np.isclose(v.phase, 244.0)
+        m = convert_convention(MassVector(2.0, -30.0, units="oz"),
+                               WITH, AGAINST)
+        assert isinstance(m, MassVector)
+        assert (m.amplitude, m.units) == (2.0, "oz")
+        assert np.isclose(m.phase, 30.0)
+        same = convert_convention(MassVector(2.0, -30.0), AGAINST, AGAINST)
+        assert np.isclose(same.phase, -30.0)
+        with pytest.raises(TypeError, match="VibrationVector or a MassVector"):
+            convert_convention(1.0, WITH, AGAINST)
+
+    def test_invalid_convention(self):
+        """Unknown conventions are refused everywhere."""
+        V, m = VibrationVector(1, 0), MassVector(1, 0)
+        with pytest.raises(ValueError, match="angle_convention must be one"):
+            convert_angle(1.0, "clockwise", WITH)
+        with pytest.raises(ValueError, match="angle_convention must be one"):
+            StaticBalancing(V, V, m, angle_convention="cw")
+        with pytest.raises(ValueError, match="angle_convention must be one"):
+            DynamicBalancing(V, V, V, V, V, V, m, m, angle_convention="cw")
+        with pytest.raises(ValueError, match="angle_convention must be one"):
+            MultiPlaneBalancing([V], [[V]], [m], angle_convention="cw")
+        with pytest.raises(ValueError, match="angle_convention must be one"):
+            InfluenceCoefficients([[1]], angle_convention="cw")
+        with pytest.raises(ValueError, match="angle_convention must be one"):
+            InfluenceCoefficients([[1]]).to_convention("cw")
+
+    def test_default_is_with_rotation(self, capsys):
+        """The default convention and the printed text are unchanged."""
+        balancer = StaticBalancing(VibrationVector(3.4, 116),
+                                   VibrationVector(1.8, 42),
+                                   MassVector(2.0, 0.0))
+        assert balancer.angle_convention == WITH
+        balancer.compute_compensation()
+        assert capsys.readouterr().out == (
+            "Compensation mass: 2.01 g at position -30.8° on the rotor.\n")
+        assert "against" not in repr(balancer)
+
+    def test_static_same_physical_correction(self, capsys):
+        """B&K example 2 entered in both conventions: one physical result."""
+        V_0, V_1 = VibrationVector(3.4, 116), VibrationVector(1.8, 42)
+        trial = MassVector(2.0, 25.0)
+        with_rot = StaticBalancing(V_0, V_1, trial).compute_compensation(
+            repr=False)
+        balancer = StaticBalancing(_flip(V_0), _flip(V_1), _flip(trial),
+                                   angle_convention=AGAINST)
+        against = balancer.compute_compensation()
+        out = capsys.readouterr().out
+        assert "against the direction of rotation" in out
+        assert "against the direction of rotation" in repr(balancer)
+        assert np.isclose(against.amplitude, with_rot.amplitude)
+        # the numbers differ ...
+        assert not np.isclose(against.phase, with_rot.phase)
+        # ... the place on the rotor is the same
+        back = convert_convention(against, AGAINST, WITH)
+        assert np.isclose(back.phase, with_rot.phase)
+
+    def test_dynamic_same_physical_correction(self, capsys):
+        """B&K two-plane example entered in both conventions."""
+        V = [VibrationVector(7.2, 238), VibrationVector(13.5, 296),
+             VibrationVector(4.9, 114), VibrationVector(9.2, 347),
+             VibrationVector(4.0, 79), VibrationVector(12.0, 292)]
+        trials = [MassVector(2.5, 10.0), MassVector(2.5, -40.0)]
+        with_rot = DynamicBalancing(*V, *trials).compute_compensation(
+            repr=False)
+        balancer = DynamicBalancing(*[_flip(v) for v in V],
+                                    *[_flip(m) for m in trials],
+                                    angle_convention=AGAINST)
+        against = balancer.compute_compensation()
+        assert "against the direction of rotation" in capsys.readouterr().out
+        assert "against the direction of rotation" in repr(balancer)
+        for a, w in zip(against, with_rot):
+            back = convert_convention(a, AGAINST, WITH)
+            assert np.isclose(back.amplitude, w.amplitude)
+            assert np.isclose(back.phase, w.phase)
+
+    def test_multi_plane_same_physical_correction(self, capsys):
+        """Synthetic 3 planes x 4 points, trial masses left on."""
+        rng = np.random.default_rng(8)
+        alpha = rng.normal(size=(4, 3)) + 1j * rng.normal(size=(4, 3))
+        unbalance = rng.normal(size=3) + 1j * rng.normal(size=3)
+        trials = [MassVector(1.0, 20.0), MassVector(1.5, -70.0),
+                  MassVector(0.8, 140.0)]
+        V_0, V_trial = _simulate_runs(alpha, unbalance, trials)
+        with_rot = MultiPlaneBalancing(V_0, V_trial, trials)
+        against = MultiPlaneBalancing(
+            [_flip(v) for v in V_0],
+            [[_flip(v) for v in run] for run in V_trial],
+            [_flip(m) for m in trials], angle_convention=AGAINST)
+        comp_w = with_rot.compute_compensation(repr=False)
+        comp_a = against.compute_compensation()
+        assert "against the direction of rotation" in capsys.readouterr().out
+        assert "against the direction of rotation" in repr(against)
+        for a, w in zip(comp_a, comp_w):
+            back = convert_convention(a, AGAINST, WITH)
+            assert np.isclose(back.amplitude, w.amplitude)
+            assert np.isclose(back.phase, w.phase)
+        # known unbalance -> known correction, in the with-rotation frame
+        assert np.allclose([_as_complex(convert_convention(a, AGAINST, WITH))
+                            for a in comp_a], -unbalance)
+        for a, w in zip(against.residual_vibration(),
+                        with_rot.residual_vibration()):
+            assert np.isclose(a.amplitude, w.amplitude, atol=1e-12)
+
+    def test_published_instrument_convention_example(self):
+        """Fan example given in the instrument convention (against rotation).
+
+        Kelm, Kelm and Pavelek, "Rotor Balancing Tutorial", Turbomachinery
+        and Pump Symposia, 2016: readings 5.6 @ 135° and 3.3 @ 238° (phase
+        lag), trial 74 oz·in @ 315° against rotation; published correction
+        58.24 oz·in @ 341.9°.  Reproduced to 0.2 % and 0.1°.  Counted with
+        the rotation, the same place is at 18.1°.
+        """
+        balancer = StaticBalancing(
+            VibrationVector(5.6, 135), VibrationVector(3.3, 238),
+            MassVector(74.0, 315.0, units="oz·in"), angle_convention=AGAINST)
+        comp = balancer.compute_compensation(repr=False)
+        assert np.isclose(comp.amplitude, 58.24, atol=0, rtol=2e-3)
+        assert np.isclose(comp.phase % 360, 341.9, atol=0.1, rtol=0)
+        with_rot = convert_convention(comp, AGAINST, WITH)
+        assert np.isclose(with_rot.phase, 18.1, atol=0.1, rtol=0)
+
+    def test_influence_coefficients_conversion(self):
+        """Stored coefficients are converted for readings of the other kind."""
+        rng = np.random.default_rng(4)
+        alpha = rng.normal(size=(3, 2)) + 1j * rng.normal(size=(3, 2))
+        unbalance = np.array([1.2 * np.exp(0.7j), 0.4 * np.exp(-2.5j)])
+        V = [VibrationVector.from_complex(z) for z in alpha @ unbalance]
+        with_rot = InfluenceCoefficients(alpha)
+        assert with_rot.angle_convention == WITH
+        assert "angle_convention" not in repr(with_rot)
+        assert np.array_equal(with_rot.to_convention(WITH).matrix, alpha)
+
+        against = with_rot.to_convention(AGAINST)
+        assert against.angle_convention == AGAINST
+        assert "against_rotation" in repr(against)
+        assert np.allclose(against.matrix, np.conj(alpha))
+        comp = against.compute_compensation([_flip(v) for v in V])
+        assert np.allclose(
+            [_as_complex(convert_convention(m, AGAINST, WITH)) for m in comp],
+            -unbalance)
+
+        # the convention is stored and restored
+        d = against.to_dict()
+        assert d["angle_convention"] == AGAINST
+        loaded = InfluenceCoefficients.from_dict(d)
+        assert loaded.angle_convention == AGAINST
+        assert np.allclose(loaded.to_convention(WITH).matrix, alpha)
+        # dictionaries without the key are with the rotation
+        del d["angle_convention"]
+        assert InfluenceCoefficients.from_dict(d).angle_convention == WITH
+
+    def test_convention_is_passed_on(self):
+        """Coefficients taken from a balancer keep its convention."""
+        V, m = VibrationVector(1, 0), MassVector(1, 0)
+        balancer = MultiPlaneBalancing([V], [[VibrationVector(2, 40)]], [m],
+                                       angle_convention=AGAINST)
+        assert balancer.get_influence_coefficients().angle_convention == AGAINST
+        c = InfluenceCoefficients.from_trial_runs(
+            V, VibrationVector(2, 40), m, angle_convention=AGAINST)
+        assert c.angle_convention == AGAINST

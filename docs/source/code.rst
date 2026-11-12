@@ -54,6 +54,15 @@ MultiPlaneBalancing
    :show-inheritance:
 
 
+InfluenceCoefficients
+---------------------
+
+.. autoclass:: pyPRB.InfluenceCoefficients
+   :members:
+   :special-members: __init__, __repr__
+   :undoc-members:
+   :show-inheritance:
+
 IllConditionedWarning
 ---------------------
 

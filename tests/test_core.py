@@ -3,8 +3,9 @@ import pytest
 
 import warnings
 
-from pyPRB import (DynamicBalancing, IllConditionedWarning, MassVector,
-                   MultiPlaneBalancing, StaticBalancing, VibrationVector)
+from pyPRB import (DynamicBalancing, IllConditionedWarning,
+                   InfluenceCoefficients, MassVector, MultiPlaneBalancing,
+                   StaticBalancing, VibrationVector)
 
 
 class TestVibrationVector:
@@ -608,3 +609,298 @@ class TestMultiPlaneConditioning:
         with pytest.raises(ValueError, match="max_condition_number"):
             MultiPlaneBalancing([V], [[VibrationVector(2.0, 0.0)]],
                                 [MassVector(1.0, 0.0)], max_condition_number=0)
+
+
+class TestTrialMassLeftOn:
+    """Tests for trial masses that stay on the rotor for the next runs."""
+
+    def _case(self, n_planes=3, n_sensors=4, seed=5):
+        rng = np.random.default_rng(seed)
+        alpha = (rng.normal(size=(n_sensors, n_planes))
+                 + 1j * rng.normal(size=(n_sensors, n_planes)))
+        unbalance = rng.normal(size=n_planes) + 1j * rng.normal(size=n_planes)
+        trial_masses = [MassVector(1.0 + 0.3 * j, 40.0 * j - 30.0)
+                        for j in range(n_planes)]
+        T = np.array([_as_complex(tm) for tm in trial_masses])
+        V_0_c = alpha @ unbalance
+        V_0 = [VibrationVector.from_complex(z) for z in V_0_c]
+        V_trial = []
+        on = np.zeros(n_planes, dtype=complex)
+        for j in range(n_planes):
+            on[j] = T[j]                   # previous trial masses stay
+            V_trial.append([VibrationVector.from_complex(z)
+                            for z in V_0_c + alpha @ on])
+        return alpha, unbalance, trial_masses, T, V_0, V_trial
+
+    def test_default_is_removed(self):
+        """The default keeps the behaviour of removed trial masses."""
+        balancer = MultiPlaneBalancing(
+            [VibrationVector(1, 0)], [[VibrationVector(2, 30)]],
+            [MassVector(1.0, 0.0)])
+        assert balancer.trial_left_on is False
+
+    def test_recovers_coefficients_and_unbalance(self):
+        """Known unbalance and coefficients are recovered (square case)."""
+        alpha, unbalance, trial_masses, T, V_0, V_trial = self._case(3, 3)
+        balancer = MultiPlaneBalancing(V_0, V_trial, trial_masses,
+                                       trial_left_on=True)
+        assert np.allclose(balancer.influence_coefficients, alpha)
+        comp = balancer.compute_compensation(repr=False)
+        assert np.allclose([_as_complex(m) for m in comp], -unbalance)
+
+    def test_wrong_flag_gives_wrong_coefficients(self):
+        """Without the flag the same runs give other coefficients."""
+        alpha, _, trial_masses, _, V_0, V_trial = self._case(3, 3)
+        balancer = MultiPlaneBalancing(V_0, V_trial, trial_masses)
+        assert np.allclose(balancer.influence_coefficients[:, 0], alpha[:, 0])
+        assert not np.allclose(balancer.influence_coefficients, alpha)
+
+    def test_keep_trial_masses(self):
+        """Masses to add with the trial masses kept: W - T, zero residual."""
+        alpha, unbalance, trial_masses, T, V_0, V_trial = self._case(3, 3)
+        balancer = MultiPlaneBalancing(V_0, V_trial, trial_masses,
+                                       trial_left_on=True)
+        add = balancer.compute_compensation(repr=False,
+                                            keep_trial_masses=True)
+        add_c = np.array([_as_complex(m) for m in add])
+        assert np.allclose(add_c, -unbalance - T)
+        # total on the rotor: unbalance + trial masses + added = 0
+        assert np.allclose(alpha @ (unbalance + T + add_c), 0)
+
+    def test_keep_equals_trim_from_last_run(self):
+        """Keeping the trial masses equals a trim from the last run (M > N)."""
+        _, _, trial_masses, _, V_0, V_trial = self._case(2, 4)
+        balancer = MultiPlaneBalancing(V_0, V_trial, trial_masses,
+                                       trial_left_on=True)
+        add = balancer.compute_compensation(repr=False,
+                                            keep_trial_masses=True)
+        trim = balancer.get_influence_coefficients().compute_compensation(
+            V_trial[-1])
+        assert np.allclose([_as_complex(m) for m in add],
+                           [_as_complex(m) for m in trim])
+
+    def test_keep_requires_left_on(self):
+        """keep_trial_masses needs runs measured with the masses left on."""
+        balancer = MultiPlaneBalancing(
+            [VibrationVector(1, 0)], [[VibrationVector(2, 30)]],
+            [MassVector(1.0, 0.0)])
+        with pytest.raises(ValueError, match="requires trial_left_on=True"):
+            balancer.compute_compensation(repr=False, keep_trial_masses=True)
+
+    def test_one_plane_left_on_formula(self):
+        """One plane with the trial left on: W_add = -V_1 / alpha.
+
+        Data of the fan example in Kelm, Kelm and Pavelek, "Rotor Balancing
+        Tutorial", Turbomachinery and Pump Symposia, 2016 (readings
+        5.6 @ 135° and 3.3 @ 238°, trial 74 oz·in @ 315°).  The published
+        correction with the trial removed is 58.24 oz·in @ 341.9°; with
+        the trial left on the mass to add is that correction minus the
+        trial mass.
+        """
+        V_0, V_1 = VibrationVector(5.6, 135), VibrationVector(3.3, 238)
+        trial = MassVector(74.0, 315.0, units="oz·in")
+        balancer = MultiPlaneBalancing([V_0], [[V_1]], [trial],
+                                       trial_left_on=True)
+        removed = balancer.compute_compensation(repr=False)[0]
+        assert np.isclose(removed.amplitude, 58.24, atol=0, rtol=2e-3)
+        assert np.isclose(removed.phase % 360, 341.9, atol=0.1, rtol=0)
+        add = balancer.compute_compensation(repr=False,
+                                            keep_trial_masses=True)[0]
+        alpha = (V_1.complex_num - V_0.complex_num) / _as_complex(trial)
+        assert np.isclose(_as_complex(add), -V_1.complex_num / alpha)
+        assert np.isclose(_as_complex(add),
+                          _as_complex(removed) - _as_complex(trial))
+
+    def test_print_table(self, capsys):
+        """The table says that the trial masses were left on."""
+        _, _, trial_masses, _, V_0, V_trial = self._case(2, 2)
+        balancer = MultiPlaneBalancing(V_0, V_trial, trial_masses,
+                                       trial_left_on=True)
+        assert "left on" in repr(balancer)
+        balancer.compute_compensation(keep_trial_masses=True)
+        assert "Compensation Mass" in capsys.readouterr().out
+
+
+class TestInfluenceCoefficients:
+    """Tests for the InfluenceCoefficients class."""
+
+    BK4 = dict(
+        V_0=[VibrationVector(7.2, 238), VibrationVector(13.5, 296)],
+        V_trial=[[VibrationVector(4.9, 114), VibrationVector(9.2, 347)],
+                 [VibrationVector(4.0, 79), VibrationVector(12.0, 292)]],
+        trial_masses=[MassVector(2.5, 0.0), MassVector(2.5, 0.0)],
+    )
+
+    def test_BK_two_plane_example_from_stored_coefficients(self):
+        """Two-plane example of the B&K application note without trial runs.
+
+        J. Vaughan, "Static and Dynamic Balancing using portable measuring
+        equipment", Brüel & Kjær application note: published result
+        2.93 g @ 50.4° and 2.84 g @ -81.9° (tolerance 5 % as in the
+        existing tests; exactly equal to DynamicBalancing).  The
+        coefficients go through a plain dictionary and JSON first.
+        """
+        import json
+        coefficients = InfluenceCoefficients.from_trial_runs(**self.BK4)
+        stored = json.loads(json.dumps(coefficients.to_dict()))
+        loaded = InfluenceCoefficients.from_dict(stored)
+        comp = loaded.compute_compensation(self.BK4["V_0"])
+        assert np.isclose(comp[0].amplitude, 2.93, atol=0, rtol=0.05)
+        assert np.isclose(comp[0].phase, 50.4, atol=0, rtol=0.05)
+        assert np.isclose(comp[1].amplitude, 2.84, atol=0, rtol=0.05)
+        assert np.isclose(comp[1].phase, -81.9, atol=0, rtol=0.05)
+
+        V = self.BK4["V_0"] + self.BK4["V_trial"][0] + self.BK4["V_trial"][1]
+        reference = DynamicBalancing(
+            V[0], V[1], V[2], V[3], V[4], V[5],
+            *self.BK4["trial_masses"]).compute_compensation(repr=False)
+        for c, r in zip(comp, reference):
+            assert np.isclose(c.amplitude, r.amplitude, rtol=1e-12)
+            assert np.isclose(c.phase, r.phase, rtol=1e-12)
+
+    def test_BK_measured_two_plane_example_from_arrays(self):
+        """B&K application note, measured two-plane example (1.15 g trials).
+
+        Published: 1.98 g @ 236.2° and 1.07 g @ 121.8°; reproduced to
+        1 % in mass and 0.5° in angle.
+        """
+        V_0 = [VibrationVector(170, 112), VibrationVector(53, 78)]
+        V_trial = [[VibrationVector(235, 94), VibrationVector(58, 68)],
+                   [VibrationVector(185, 115), VibrationVector(77, 104)]]
+        trial_masses = [MassVector(1.15, 0.0), MassVector(1.15, 0.0)]
+        amplitude, phase = InfluenceCoefficients.from_trial_runs(
+            V_0, V_trial, trial_masses).to_amplitude_phase()
+        comp = InfluenceCoefficients.from_amplitude_phase(
+            amplitude, phase).compute_compensation(V_0)
+        assert np.isclose(comp[0].amplitude, 1.98, atol=0, rtol=0.01)
+        assert np.isclose(comp[0].phase % 360, 236.2, atol=0.5, rtol=0)
+        assert np.isclose(comp[1].amplitude, 1.07, atol=0, rtol=0.01)
+        assert np.isclose(comp[1].phase % 360, 121.8, atol=0.5, rtol=0)
+
+    def test_matches_multi_plane_property(self):
+        """The object holds the matrix of MultiPlaneBalancing."""
+        balancer = MultiPlaneBalancing(**self.BK4)
+        coefficients = balancer.get_influence_coefficients()
+        assert np.array_equal(coefficients.matrix,
+                              balancer.influence_coefficients)
+        assert coefficients.n_planes == 2
+        assert coefficients.n_sensors == 2
+        assert coefficients.units == "g"
+        assert "n_planes=2" in repr(coefficients)
+
+    def test_round_trips(self):
+        """Dictionary and amplitude/phase arrays keep the matrix."""
+        rng = np.random.default_rng(1)
+        matrix = rng.normal(size=(4, 3)) + 1j * rng.normal(size=(4, 3))
+        c = InfluenceCoefficients(matrix, units="oz")
+        d = c.to_dict()
+        assert set(d) == {"amplitude", "phase", "units"}
+        assert isinstance(d["amplitude"], list)
+        back = InfluenceCoefficients.from_dict(d)
+        assert np.allclose(back.matrix, matrix, rtol=1e-12, atol=1e-12)
+        assert back.units == "oz"
+        back = InfluenceCoefficients.from_amplitude_phase(
+            *c.to_amplitude_phase(), units="oz")
+        assert np.allclose(back.matrix, matrix, rtol=1e-12, atol=1e-12)
+
+    @pytest.mark.parametrize("n_planes,n_sensors", [(1, 1), (2, 2), (3, 5)])
+    def test_trim_recovers_remaining_unbalance(self, n_planes, n_sensors):
+        """A later job: known unbalance -> known correction, no trial runs."""
+        rng = np.random.default_rng(10 * n_planes + n_sensors)
+        alpha = (rng.normal(size=(n_sensors, n_planes))
+                 + 1j * rng.normal(size=(n_sensors, n_planes)))
+        coefficients = InfluenceCoefficients(alpha)
+        unbalance = rng.normal(size=n_planes) + 1j * rng.normal(size=n_planes)
+        check = [VibrationVector.from_complex(z) for z in alpha @ unbalance]
+        comp = coefficients.compute_compensation(check)
+        assert np.allclose([_as_complex(m) for m in comp], -unbalance)
+        heavy = coefficients.residual_unbalance(check)
+        assert np.allclose([_as_complex(m) for m in heavy], unbalance)
+
+    def test_predict_vibration(self):
+        """Prediction for fitted weights: zero for the ideal, else known."""
+        rng = np.random.default_rng(3)
+        alpha = rng.normal(size=(3, 2)) + 1j * rng.normal(size=(3, 2))
+        coefficients = InfluenceCoefficients(alpha)
+        unbalance = np.array([1.5 * np.exp(0.4j), 0.8 * np.exp(-2.0j)])
+        V = [VibrationVector.from_complex(z) for z in alpha @ unbalance]
+        ideal = coefficients.compute_compensation(V)
+        after = coefficients.predict_vibration(V, ideal)
+        assert np.allclose([v.amplitude for v in after], 0, atol=1e-12)
+
+        # one plane left empty, two weights in the other
+        fitted = [None, [MassVector(0.5, 100), MassVector(0.25, -160)]]
+        after = coefficients.predict_vibration(V, fitted)
+        w2 = _as_complex(fitted[1][0]) + _as_complex(fitted[1][1])
+        expected = alpha @ (unbalance + np.array([0, w2]))
+        assert np.allclose([v.complex_num for v in after], expected)
+
+    def test_single_objects_for_one_plane(self):
+        """One plane and one point accept single objects."""
+        c = InfluenceCoefficients(2.0j)
+        V = VibrationVector(4.0, 0)
+        comp = c.compute_compensation(V)
+        assert np.isclose(comp[0].amplitude, 2.0)
+        assert np.isclose(comp[0].phase, 90.0)
+        after = c.predict_vibration(V, MassVector(2.0, 90.0))
+        assert np.isclose(after[0].amplitude, 0, atol=1e-12)
+        assert c.predict_vibration(V, None)[0].amplitude == 4.0
+
+    def test_zero_reading_gives_none(self):
+        """Nothing to add for a zero reading."""
+        c = InfluenceCoefficients([[1.0]])
+        assert c.compute_compensation(VibrationVector(0.0, 0.0)) == [None]
+
+    def test_rank_deficient(self):
+        """Planes that cannot be told apart raise the existing error."""
+        c = InfluenceCoefficients([[1, 2], [2, 4]])
+        assert c.condition_number > 1e12
+        with pytest.raises(ValueError, match="rank deficient"):
+            c.compute_compensation([VibrationVector(1, 0),
+                                    VibrationVector(1, 0)])
+
+    def test_ill_conditioned_warns(self):
+        """Nearly equal columns warn, with an adjustable limit."""
+        matrix = [[1.0, 1.0], [1.0, 1.001]]
+        V = [VibrationVector(1, 0), VibrationVector(1, 10)]
+        c = InfluenceCoefficients(matrix)
+        with pytest.warns(IllConditionedWarning, match="ill-conditioned"):
+            c.compute_compensation(V)
+        with pytest.warns(IllConditionedWarning):
+            assert c.check_conditioning() > 100
+        import warnings
+        with warnings.catch_warnings():
+            warnings.simplefilter("error")
+            InfluenceCoefficients(matrix, max_condition_number=None
+                                  ).compute_compensation(V)
+            InfluenceCoefficients(matrix, max_condition_number=1e6
+                                  ).compute_compensation(V)
+            # well-conditioned: no warning
+            InfluenceCoefficients(np.eye(2)).compute_compensation(V)
+        assert np.isclose(InfluenceCoefficients(np.eye(2)).condition_number,
+                          1.0)
+
+    def test_invalid_input(self):
+        """Shapes, units and counts are checked."""
+        with pytest.raises(ValueError, match="at least the number"):
+            InfluenceCoefficients([[1, 2]])
+        with pytest.raises(ValueError, match="two-dimensional"):
+            InfluenceCoefficients([1, 2])
+        with pytest.raises(ValueError, match="finite"):
+            InfluenceCoefficients([[np.nan]])
+        with pytest.raises(TypeError, match="Units must be a string"):
+            InfluenceCoefficients([[1]], units=1)
+        with pytest.raises(ValueError, match="same shape"):
+            InfluenceCoefficients.from_amplitude_phase([[1, 2]], [[0]])
+        with pytest.raises(ValueError, match="non-negative"):
+            InfluenceCoefficients.from_amplitude_phase([[-1]], [[0]])
+        with pytest.raises(ValueError, match="max_condition_number"):
+            InfluenceCoefficients([[1]], max_condition_number=0)
+        c = InfluenceCoefficients(np.eye(2))
+        with pytest.raises(ValueError, match="Expected 2 readings"):
+            c.compute_compensation([VibrationVector(1, 0)])
+        V = [VibrationVector(1, 0), VibrationVector(1, 0)]
+        with pytest.raises(ValueError, match="2 correction planes"):
+            c.predict_vibration(V, [MassVector(1, 0)])
+        with pytest.raises(ValueError, match="units must match"):
+            c.predict_vibration(V, [MassVector(1, 0, units="oz"), None])

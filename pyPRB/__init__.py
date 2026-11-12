@@ -26,6 +26,9 @@ MultiPlaneBalancing
 IllConditionedWarning
     Issued when the correction planes are hard to tell apart.
 
+InfluenceCoefficients
+    Stores influence coefficients for corrections without trial runs.
+
 Examples
 --------
 Static balancing:
@@ -56,7 +59,8 @@ Dynamic balancing:
 """
 
 from .core import (VibrationVector, MassVector, StaticBalancing,
-                   DynamicBalancing, MultiPlaneBalancing, IllConditionedWarning)
+                   DynamicBalancing, MultiPlaneBalancing,
+                   InfluenceCoefficients, IllConditionedWarning)
 from .processing import VibrationExtractor, IQDemodulation, LeastSquaresFit, SynchronousAveraging, FFTExtraction, detect_rotation_freq
 from .__version__ import __version__, __author__, __email__
 
@@ -67,6 +71,7 @@ __all__ = [
     'StaticBalancing',
     'DynamicBalancing',
     'MultiPlaneBalancing',
+    'InfluenceCoefficients',
     'IllConditionedWarning',
     'VibrationExtractor',
     'IQDemodulation',

@@ -13,6 +13,10 @@ Features
 * **DynamicBalancing**: Two-plane balancing for rotors
 * **MultiPlaneBalancing**: Balancing in any number of correction planes,
   with least-squares solution when there are more measurement points than planes
+* **InfluenceCoefficients**: Influence coefficients as a reusable object:
+  stored and loaded as plain data, corrections and trim corrections without
+  trial runs, predicted vibration for the weights actually fitted, residual
+  unbalance of a reading and a conditioning check
 * **VibrationExtractor**: Extracts vibration vectors from time-domain signals
 * **detect_rotation_freq**: Detects rotation frequency from a trigger signal
 * Four pluggable extraction methods: **IQDemodulation** (default),
@@ -150,6 +154,54 @@ For ``M > N`` the least-squares solution is returned.
     print(balancer)
     compensation = balancer.compute_compensation()  # list of MassVector
     residual = balancer.residual_vibration()        # predicted vibration
+
+
+Trial Masses Left On and Stored Influence Coefficients
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+A trial mass is often welded or clamped and stays on the rotor. With
+``trial_left_on=True`` every trial run is compared with the run before it,
+and ``keep_trial_masses=True`` gives the masses to add while the trial
+masses stay. The influence coefficients can be kept for the next job on the
+same machine (same speed, sensors and phase mark), which then needs only
+one reading and no trial runs.
+
+.. code-block:: python
+
+    import json
+    from pyPRB import (VibrationVector, MassVector, MultiPlaneBalancing,
+                       InfluenceCoefficients)
+
+    V_0 = [VibrationVector(7.2, 238), VibrationVector(13.5, 296)]
+    V_trial = [
+        [VibrationVector(4.9, 114), VibrationVector(9.2, 347)],   # mass 1 on
+        [VibrationVector(6.1, 30), VibrationVector(8.0, 340)],    # masses 1 and 2 on
+    ]
+    trial_masses = [MassVector(2.5, 0.0), MassVector(2.5, 0.0)]
+
+    balancer = MultiPlaneBalancing(V_0, V_trial, trial_masses,
+                                   trial_left_on=True)
+    to_add = balancer.compute_compensation(keep_trial_masses=True)
+
+    # Keep the coefficients for the next job
+    coefficients = balancer.get_influence_coefficients()
+    with open("machine.json", "w") as f:
+        json.dump(coefficients.to_dict(), f)
+
+    # Later: one check reading gives the trim correction, no trial runs
+    with open("machine.json") as f:
+        coefficients = InfluenceCoefficients.from_dict(json.load(f))
+    check = [VibrationVector(0.9, 75), VibrationVector(1.4, 310)]
+    trim = coefficients.compute_compensation(check)
+
+    # Vibration to expect with the weights actually fitted
+    fitted = [MassVector(0.3, 45), None]          # nothing in plane 2
+    expected = coefficients.predict_vibration(check, fitted)
+
+    # The reading as an equivalent unbalance in each plane
+    heavy_spots = coefficients.residual_unbalance(check)
+
+    coefficients.check_conditioning()   # warns if the planes are hard to separate
 
 
 Extracting Vibration Vectors from Measurements

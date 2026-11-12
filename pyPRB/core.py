@@ -17,6 +17,19 @@ import numpy as np
 from tabulate import tabulate
 
 
+def _as_complex(vector) -> complex:
+    """Return a VibrationVector or MassVector as a complex number."""
+    return vector.amplitude * np.exp(1j * np.deg2rad(vector.phase))
+
+
+def _mass_from_complex(z: complex, units: str):
+    """Return a complex mass as a MassVector, or ``None`` for a zero mass."""
+    amplitude = float(np.abs(z))
+    if amplitude == 0.0:
+        return None
+    return MassVector(amplitude, float(np.rad2deg(np.angle(z))), units)
+
+
 class VibrationVector:
     """Represents a vibration vector in 2D space.
     
@@ -519,6 +532,12 @@ class MultiPlaneBalancing:
         Trial mass used in each correction plane (length ``N``), with
         amplitude (mass value) and phase (angular position on the rotor
         where it was mounted).
+    trial_left_on : bool, optional
+        If ``False`` (default), each trial mass is removed before the next
+        trial run, so every trial run is compared with the initial run.
+        If ``True``, every trial mass stays on the rotor for the following
+        runs (run ``j`` has the trial masses of planes ``1 .. j`` mounted),
+        so every trial run is compared with the run before it.
     max_condition_number : float or None, optional
         If the condition number of the influence coefficient matrix
         exceeds this value, :class:`IllConditionedWarning` is issued when
@@ -551,6 +570,12 @@ class MultiPlaneBalancing:
     :class:`StaticBalancing`; with ``N == M == 2`` it equals
     :class:`DynamicBalancing`.
 
+    With ``trial_left_on=True`` the numerator is the change against the
+    previous run, :math:`V_{ij} - V_{i,j-1}`.  The compensation masses are
+    still the masses for the rotor *without* trial masses; call
+    ``compute_compensation(keep_trial_masses=True)`` for the masses to add
+    while the trial masses stay where they are.
+
     Trial masses in all planes must use the same units. No unit conversion
     is performed.
 
@@ -582,7 +607,7 @@ class MultiPlaneBalancing:
     MassVector(amplitude=2.84414, phase=-81.8841°, units='g')
     """
 
-    def __init__(self, V_0, V_trial, trial_masses,
+    def __init__(self, V_0, V_trial, trial_masses, trial_left_on=False,
                  max_condition_number=100.0):
         V_0 = list(V_0)
         V_trial = [list(run) for run in V_trial]
@@ -622,6 +647,7 @@ class MultiPlaneBalancing:
         self.max_condition_number = max_condition_number
         self.n_planes = n_planes
         self.n_sensors = n_sensors
+        self.trial_left_on = bool(trial_left_on)
 
     def __repr__(self) -> str:
         """Return a formatted table representation of the balancing data."""
@@ -642,6 +668,8 @@ class MultiPlaneBalancing:
                          stralign="center",
                          numalign="center")
         title = "Multi-Plane Balancing - Measured Vibration Data"
+        if self.trial_left_on:
+            title += "\n(each trial mass left on for the following runs)"
         separator = "=" * 80
         return f"\n{separator}\n{title}\n{separator}\n{table}\n{separator}"
 
@@ -654,10 +682,13 @@ class MultiPlaneBalancing:
         """
         V_0 = np.array([v.complex_num for v in self.V_0])
         alpha = np.empty((self.n_sensors, self.n_planes), dtype=complex)
+        V_before = V_0
         for j, (run, tm) in enumerate(zip(self.V_trial, self.trial_masses)):
             V_j = np.array([v.complex_num for v in run])
             T_j = tm.amplitude * np.exp(1j * np.deg2rad(tm.phase))
-            alpha[:, j] = (V_j - V_0) / T_j
+            alpha[:, j] = (V_j - V_before) / T_j
+            if self.trial_left_on:
+                V_before = V_j
         return alpha
 
     @property
@@ -668,6 +699,29 @@ class MultiPlaneBalancing:
         the matrix is rank deficient.
         """
         return float(np.linalg.cond(self.influence_coefficients))
+
+    def get_influence_coefficients(self, max_condition_number=100.0):
+        """Return the influence coefficients as a reusable object.
+
+        The returned :class:`InfluenceCoefficients` can be stored (see
+        :meth:`InfluenceCoefficients.to_dict`) and used later on the same
+        machine without new trial runs.
+
+        Parameters
+        ----------
+        max_condition_number : float or None, optional
+            Passed to :class:`InfluenceCoefficients`.
+
+        Returns
+        -------
+        InfluenceCoefficients
+            Influence coefficients of this set of runs, in the units of
+            the trial masses.
+        """
+        return InfluenceCoefficients(
+            self.influence_coefficients,
+            units=self.trial_masses[0].units,
+            max_condition_number=max_condition_number)
 
     def _solve(self) -> np.ndarray:
         """Return compensation masses as complex numbers (length ``N``).
@@ -694,19 +748,29 @@ class MultiPlaneBalancing:
                 IllConditionedWarning, stacklevel=3)
         return W
 
-    def compute_compensation(self, repr: bool = True) -> list:
+    def compute_compensation(self, repr: bool = True,
+                             keep_trial_masses: bool = False) -> list:
         """Calculate compensating masses and positions for all planes.
 
         Parameters
         ----------
         repr : bool, optional
             If ``True``, print the compensation details.  Default is ``True``.
+        keep_trial_masses : bool, optional
+            If ``False`` (default), the result is the compensation for the
+            rotor without trial masses (all trial masses are removed).
+            If ``True``, the result is what has to be added while all trial
+            masses stay on the rotor; this requires ``trial_left_on=True``,
+            because only then the last run was measured with all trial
+            masses mounted.
 
         Returns
         -------
         list of MassVector
             Compensating mass for each correction plane (length ``N``) with
-            absolute angular position on the rotor.
+            absolute angular position on the rotor.  With
+            ``keep_trial_masses=True`` an entry is ``None`` if nothing has to
+            be added in that plane.
 
         Raises
         ------
@@ -720,12 +784,22 @@ class MultiPlaneBalancing:
         """
         W = self._solve()
         units = self.trial_masses[0].units
-        result = [MassVector(np.abs(w), np.rad2deg(np.angle(w)), units)
-                  for w in W]
+        if keep_trial_masses:
+            if not self.trial_left_on:
+                raise ValueError(
+                    "keep_trial_masses=True requires trial_left_on=True: the "
+                    "trial masses were removed between the runs.")
+            T = np.array([_as_complex(tm) for tm in self.trial_masses])
+            result = [_mass_from_complex(w, units) for w in W - T]
+        else:
+            result = [MassVector(np.abs(w), np.rad2deg(np.angle(w)), units)
+                      for w in W]
 
         if repr:
             data = [[f"{j + 1}", f"{m.amplitude:.2f} {m.units}",
-                     f"{m.phase:.1f}°"] for j, m in enumerate(result)]
+                     f"{m.phase:.1f}°"] if m is not None
+                    else [f"{j + 1}", f"0.00 {units}", "-"]
+                    for j, m in enumerate(result)]
             headers = ["Plane", "Compensation Mass", "Position"]
             print(tabulate(data,
                            headers=headers,
@@ -754,3 +828,433 @@ class MultiPlaneBalancing:
         V_0 = np.array([v.complex_num for v in self.V_0])
         residual = V_0 + self.influence_coefficients @ self._solve()
         return [VibrationVector.from_complex(z) for z in residual]
+
+
+class InfluenceCoefficients:
+    """Influence coefficients of a machine as a reusable object.
+
+    The influence coefficient :math:`\\alpha_{ij}` is the vibration at
+    measurement point ``i`` caused by a unit mass at 0° in correction plane
+    ``j``.  Once known from trial runs, the coefficients describe the
+    machine (at the same speed, with the same sensors and the same phase
+    reference), so that a later balancing job needs no trial runs: one
+    reading is enough for a correction.
+
+    Parameters
+    ----------
+    matrix : array_like of complex
+        Influence coefficient matrix, shape ``M`` x ``N`` (``M``
+        measurement points, ``N`` correction planes, ``M >= N``).  A scalar
+        is taken as one plane and one point.
+    units : str, optional
+        Mass units the coefficients refer to, by default "g".  Masses
+        given to and returned by the methods use these units; no unit
+        conversion is performed.
+    max_condition_number : float or None, optional
+        Condition number of the matrix above which
+        :class:`IllConditionedWarning` is issued, by default 100.  The
+        default is a pragmatic choice, not a published limit; ``None``
+        switches the warning off.  A rank-deficient matrix always raises
+        ``ValueError``.
+
+    Attributes
+    ----------
+    matrix : numpy.ndarray
+        The ``M`` x ``N`` complex matrix.
+    n_sensors, n_planes : int
+        ``M`` and ``N``.
+
+    Notes
+    -----
+    With the readings :math:`\\mathbf{V}` taken in some state of the rotor,
+    the masses :math:`\\mathbf{W}` to add in that state follow from
+
+    .. math::
+
+        \\boldsymbol{\\alpha} \\, \\mathbf{W} = -\\mathbf{V}
+
+    (exactly for ``M == N``, in the least-squares sense for ``M > N``).
+    This is the same equation for the first correction and for every trim
+    correction from a later check reading.
+
+    The coefficients are valid only for the conditions under which they
+    were measured: the same machine and speed, the same measurement points
+    and the same phase reference mark.
+
+    Examples
+    --------
+    Coefficients from the two-plane example 4 of the B&K application note,
+    stored as plain data and used again without trial runs:
+
+    >>> V_0 = [VibrationVector(7.2, 238), VibrationVector(13.5, 296)]
+    >>> V_trial = [
+    ...     [VibrationVector(4.9, 114), VibrationVector(9.2, 347)],
+    ...     [VibrationVector(4.0, 79), VibrationVector(12.0, 292)],
+    ... ]
+    >>> trial_masses = [MassVector(2.5, 0.0), MassVector(2.5, 0.0)]
+    >>> coefficients = InfluenceCoefficients.from_trial_runs(
+    ...     V_0, V_trial, trial_masses)
+    >>> stored = coefficients.to_dict()          # e.g. json.dump(stored, f)
+    >>> coefficients = InfluenceCoefficients.from_dict(stored)
+    >>> comp = coefficients.compute_compensation(V_0)
+    >>> print(comp[0])
+    MassVector(amplitude=2.95138, phase=50.1889°, units='g')
+    >>> print(comp[1])
+    MassVector(amplitude=2.84414, phase=-81.8841°, units='g')
+
+    Predicted vibration if only rounded masses are fitted:
+
+    >>> fitted = [MassVector(3.0, 50), MassVector(3.0, -80)]
+    >>> for v in coefficients.predict_vibration(V_0, fitted):
+    ...     print(v)
+    VibrationVector(amplitude=0.788518, phase=31.4623°)
+    VibrationVector(amplitude=0.333033, phase=105.618°)
+    """
+
+    def __init__(self, matrix, units: str = "g",
+                 max_condition_number: 'float | None' = 100.0):
+        matrix = np.array(matrix, dtype=complex)
+        if matrix.ndim == 0:
+            matrix = matrix.reshape(1, 1)
+        if matrix.ndim != 2 or matrix.size == 0:
+            raise ValueError(
+                "The influence coefficient matrix must be two-dimensional "
+                "(measurement points x correction planes) and not empty.")
+        if matrix.shape[0] < matrix.shape[1]:
+            raise ValueError(
+                f"Number of measurement points ({matrix.shape[0]}) must be "
+                f"at least the number of correction planes "
+                f"({matrix.shape[1]}).")
+        if not np.all(np.isfinite(matrix)):
+            raise ValueError("Influence coefficients must be finite.")
+        if not isinstance(units, str):
+            raise TypeError("Units must be a string.")
+        if max_condition_number is not None and max_condition_number <= 0:
+            raise ValueError("max_condition_number must be positive or None.")
+
+        self.matrix = matrix
+        self.units = units
+        self.max_condition_number = max_condition_number
+        self.n_sensors, self.n_planes = matrix.shape
+
+    def __repr__(self) -> str:
+        return (f"InfluenceCoefficients(n_sensors={self.n_sensors}, "
+                f"n_planes={self.n_planes}, units='{self.units}')")
+
+    # -- construction and storage ------------------------------------------
+
+    @classmethod
+    def from_trial_runs(cls, V_0, V_trial, trial_masses,
+                        trial_left_on: bool = False,
+                        max_condition_number: 'float | None' = 100.0
+                        ) -> 'InfluenceCoefficients':
+        """Compute the coefficients from an initial run and trial runs.
+
+        The arguments are those of :class:`MultiPlaneBalancing`; for one
+        plane and one measurement point single objects may be given
+        instead of sequences.
+
+        Parameters
+        ----------
+        V_0 : VibrationVector or sequence of VibrationVector
+            Initial run, one vector per measurement point.
+        V_trial : sequence of sequences of VibrationVector
+            ``V_trial[j][i]`` is the vibration at point ``i`` in the trial
+            run of plane ``j``.  For one plane and one point a single
+            VibrationVector.
+        trial_masses : MassVector or sequence of MassVector
+            Trial mass of each correction plane.
+        trial_left_on : bool, optional
+            ``True`` if every trial mass stayed on the rotor for the
+            following runs.  Default is ``False``.
+        max_condition_number : float or None, optional
+            See the class description.
+
+        Returns
+        -------
+        InfluenceCoefficients
+
+        Examples
+        --------
+        One plane, example 2 of the B&K application note:
+
+        >>> coefficients = InfluenceCoefficients.from_trial_runs(
+        ...     VibrationVector(3.4, 116), VibrationVector(1.8, 42),
+        ...     MassVector(2.0, 0.0))
+        >>> print(coefficients.compute_compensation(VibrationVector(3.4, 116))[0])
+        MassVector(amplitude=2.01168, phase=-30.7888°, units='g')
+        """
+        if isinstance(V_0, VibrationVector):
+            V_0 = [V_0]
+        if isinstance(trial_masses, MassVector):
+            trial_masses = [trial_masses]
+        if isinstance(V_trial, VibrationVector):
+            V_trial = [[V_trial]]
+        balancer = MultiPlaneBalancing(V_0, V_trial, trial_masses,
+                                       trial_left_on=trial_left_on)
+        return balancer.get_influence_coefficients(
+            max_condition_number=max_condition_number)
+
+    @classmethod
+    def from_amplitude_phase(cls, amplitude, phase, units: str = "g",
+                             max_condition_number: 'float | None' = 100.0
+                             ) -> 'InfluenceCoefficients':
+        """Create the coefficients from arrays of amplitude and phase.
+
+        Parameters
+        ----------
+        amplitude : array_like of float
+            Vibration amplitude per unit mass, shape ``M`` x ``N``.
+        phase : array_like of float
+            Phase in degrees, shape ``M`` x ``N``.
+        units : str, optional
+            Mass units, by default "g".
+        max_condition_number : float or None, optional
+            See the class description.
+
+        Returns
+        -------
+        InfluenceCoefficients
+        """
+        amplitude = np.asarray(amplitude, dtype=float)
+        phase = np.asarray(phase, dtype=float)
+        if amplitude.shape != phase.shape:
+            raise ValueError(
+                f"amplitude and phase must have the same shape: got "
+                f"{amplitude.shape} and {phase.shape}.")
+        if np.any(amplitude < 0):
+            raise ValueError("Amplitudes must be non-negative.")
+        return cls(amplitude * np.exp(1j * np.deg2rad(phase)), units=units,
+                   max_condition_number=max_condition_number)
+
+    def to_amplitude_phase(self) -> 'tuple[np.ndarray, np.ndarray]':
+        """Return the coefficients as arrays of amplitude and phase.
+
+        Returns
+        -------
+        amplitude : numpy.ndarray
+            Vibration amplitude per unit mass, shape ``M`` x ``N``.
+        phase : numpy.ndarray
+            Phase in degrees in the range [0, 360), shape ``M`` x ``N``.
+        """
+        return np.abs(self.matrix), np.rad2deg(np.angle(self.matrix)) % 360
+
+    def to_dict(self) -> dict:
+        """Return the coefficients as a plain dictionary.
+
+        The dictionary holds only lists, floats and strings, so it can be
+        written to JSON or any other plain format and read again with
+        :meth:`from_dict`.
+
+        Returns
+        -------
+        dict
+            Keys ``"amplitude"`` and ``"phase"`` (nested lists, ``M`` x
+            ``N``, phase in degrees) and ``"units"``.
+        """
+        amplitude, phase = self.to_amplitude_phase()
+        return {
+            "amplitude": amplitude.tolist(),
+            "phase": phase.tolist(),
+            "units": self.units,
+        }
+
+    @classmethod
+    def from_dict(cls, data: dict,
+                  max_condition_number: 'float | None' = 100.0
+                  ) -> 'InfluenceCoefficients':
+        """Create the coefficients from a dictionary made by :meth:`to_dict`.
+
+        Parameters
+        ----------
+        data : dict
+            Dictionary with the keys ``"amplitude"``, ``"phase"`` and,
+            optionally, ``"units"``.
+        max_condition_number : float or None, optional
+            See the class description.
+
+        Returns
+        -------
+        InfluenceCoefficients
+        """
+        return cls.from_amplitude_phase(
+            data["amplitude"], data["phase"], units=data.get("units", "g"),
+            max_condition_number=max_condition_number)
+
+    # -- checks --------------------------------------------------------------
+
+    @property
+    def condition_number(self) -> float:
+        """Condition number of the matrix (largest / smallest singular value).
+
+        1 means that the correction planes are perfectly separated by the
+        measurement points; a large value means that two planes have
+        nearly the same effect on all points.  The value depends on the
+        scaling of the rows and columns (different sensors or radii).
+        """
+        s = np.linalg.svd(self.matrix, compute_uv=False)
+        if s[-1] == 0:
+            return float("inf")
+        return float(s[0] / s[-1])
+
+    def check_conditioning(self) -> float:
+        """Check that the correction planes can be told apart.
+
+        Returns
+        -------
+        float
+            The condition number.
+
+        Raises
+        ------
+        ValueError
+            If the matrix is rank deficient (the trial runs do not
+            distinguish all correction planes).
+
+        Warns
+        -----
+        IllConditionedWarning
+            If the condition number exceeds ``max_condition_number``.
+        """
+        if np.linalg.matrix_rank(self.matrix) < self.n_planes:
+            raise ValueError(
+                "Influence coefficient matrix is rank deficient: the trial "
+                "runs do not distinguish all correction planes.")
+        cond = self.condition_number
+        if (self.max_condition_number is not None
+                and cond > self.max_condition_number):
+            warnings.warn(
+                f"Influence coefficient matrix is ill-conditioned (condition "
+                f"number {cond:.3g} > {self.max_condition_number:g}): small "
+                "errors in the readings give large errors in the masses.",
+                IllConditionedWarning, stacklevel=3)
+        return cond
+
+    # -- use -----------------------------------------------------------------
+
+    def _readings(self, V) -> np.ndarray:
+        """Return readings as a complex array of length ``M``."""
+        if isinstance(V, VibrationVector):
+            V = [V]
+        V = list(V)
+        if len(V) != self.n_sensors:
+            raise ValueError(
+                f"Expected {self.n_sensors} readings (one per measurement "
+                f"point), got {len(V)}.")
+        return np.array([v.complex_num for v in V])
+
+    def _masses(self, masses) -> np.ndarray:
+        """Return fitted masses as a complex array of length ``N``."""
+        if isinstance(masses, MassVector) or masses is None:
+            masses = [masses]
+        masses = list(masses)
+        if len(masses) != self.n_planes:
+            raise ValueError(
+                f"Expected masses for {self.n_planes} correction planes, "
+                f"got {len(masses)}.")
+        W = np.zeros(self.n_planes, dtype=complex)
+        for j, plane in enumerate(masses):
+            if plane is None:
+                continue
+            if isinstance(plane, MassVector):
+                plane = [plane]
+            for m in plane:
+                if m.units != self.units:
+                    raise ValueError(
+                        f"Mass units must match the coefficients: got "
+                        f"'{m.units}', expected '{self.units}'. "
+                        "No unit conversion is performed.")
+                W[j] += _as_complex(m)
+        return W
+
+    def _solve(self, rhs: np.ndarray) -> np.ndarray:
+        self.check_conditioning()
+        W, _, _, _ = np.linalg.lstsq(self.matrix, rhs, rcond=None)
+        return W
+
+    def compute_compensation(self, V) -> list:
+        """Calculate the masses to add from one reading.
+
+        The reading may be the initial run of a new job or a check run
+        after a correction (a trim correction): the result is what has to
+        be added to the rotor *as it was when the reading was taken*.
+        No trial runs are needed.
+
+        Parameters
+        ----------
+        V : VibrationVector or sequence of VibrationVector
+            Vibration at each measurement point (length ``M``).
+
+        Returns
+        -------
+        list of MassVector
+            Mass to add in each correction plane (length ``N``).  An entry
+            is ``None`` if nothing has to be added in that plane.
+
+        Examples
+        --------
+        A trim correction: the check run after the first correction still
+        shows some vibration.
+
+        >>> coefficients = InfluenceCoefficients([[1.2 + 0.5j]])
+        >>> check = VibrationVector(0.6, 200)
+        >>> print(coefficients.compute_compensation(check)[0])
+        MassVector(amplitude=0.461538, phase=-2.61986°, units='g')
+        """
+        W = self._solve(-self._readings(V))
+        return [_mass_from_complex(w, self.units) for w in W]
+
+    def predict_vibration(self, V, masses) -> list:
+        """Predict the vibration after fitting a given set of masses.
+
+        Unlike the ideal compensation, the masses actually fitted are
+        usually rounded, split onto available positions or limited by
+        what is at hand.  This gives the vibration to expect with them.
+
+        Parameters
+        ----------
+        V : VibrationVector or sequence of VibrationVector
+            Vibration at each measurement point before fitting the masses
+            (length ``M``).
+        masses : sequence
+            What is added in each correction plane (length ``N``): a
+            MassVector, a sequence of MassVector (several weights in one
+            plane) or ``None`` (nothing).  A removed mass is a mass added
+            at the opposite position.
+
+        Returns
+        -------
+        list of VibrationVector
+            Predicted vibration at each measurement point (length ``M``).
+        """
+        predicted = self._readings(V) + self.matrix @ self._masses(masses)
+        return [VibrationVector.from_complex(z) for z in predicted]
+
+    def residual_unbalance(self, V) -> list:
+        """Express a reading as an equivalent unbalance in each plane.
+
+        The result is the set of masses (one per correction plane, at the
+        radius of the trial masses) that would cause the reading: the
+        heavy spots that are still on the rotor.  Multiplied by the
+        radius, the amplitudes can be compared with a balance tolerance.
+
+        Parameters
+        ----------
+        V : VibrationVector or sequence of VibrationVector
+            Vibration at each measurement point (length ``M``).
+
+        Returns
+        -------
+        list of MassVector
+            Equivalent unbalance mass in each correction plane (length
+            ``N``), opposite to the compensation.  An entry is ``None`` for
+            a plane without unbalance.
+
+        Examples
+        --------
+        >>> coefficients = InfluenceCoefficients([[1.2 + 0.5j]])
+        >>> print(coefficients.residual_unbalance(VibrationVector(0.6, 200))[0])
+        MassVector(amplitude=0.461538, phase=177.38°, units='g')
+        """
+        W = self._solve(self._readings(V))
+        return [_mass_from_complex(w, self.units) for w in W]

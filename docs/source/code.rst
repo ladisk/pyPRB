@@ -90,6 +90,15 @@ Balance tolerance
    :member-order: bysource
 
 
+Weight tools
+============
+
+.. automodule:: pyPRB.weights
+   :members:
+   :undoc-members:
+   :member-order: bysource
+
+
 Signal Processing
 =================
 

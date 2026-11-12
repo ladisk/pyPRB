@@ -22,6 +22,9 @@ Features
 * **Balance tolerance**: permissible residual unbalance from a balance
   quality grade G, rotor mass and service speed, its allocation to two
   planes and a check of a residual against it
+* **Weight tools**: split a correction onto fixed positions or two allowed
+  angles, combine weights, change the radius, add or remove, round to a
+  weight step with the error that stays
 * **VibrationExtractor**: Extracts vibration vectors from time-domain signals
 * **detect_rotation_freq**: Detects rotation frequency from a trigger signal
 * Four pluggable extraction methods: **IQDemodulation** (default),
@@ -283,6 +286,51 @@ unbalance is ``U_per = 9549 * G * M / n`` in g·mm.
 The grade for a given machine and the rules for unusual rotors (for
 example overhung ones) are to be taken from ISO 21940-11; the allocation
 limits used by default are the commonly published ones and can be changed.
+
+
+Weight Tools
+~~~~~~~~~~~~
+
+The computed compensation is one mass at one angle. What is fitted is often
+something else: weights on blades or in bolt holes, at another radius,
+drilled out instead of added, rounded to the weights at hand.
+
+.. code-block:: python
+
+    from pyPRB import (MassVector, split_mass, split_mass_on_positions,
+                       combine_masses, change_radius, opposite_position,
+                       round_mass, mass_error)
+
+    correction = MassVector(50.0, 35.0)
+
+    # 12-blade fan, blade 0 at 0°: the two nearest blades
+    split_mass_on_positions(correction, n_positions=12)
+    # [(1, MassVector(42.26 g, 30°)), (2, MassVector(8.72 g, 60°))]
+
+    # Two arbitrary allowed angles
+    part_1, part_2 = split_mass(correction, 20.0, 80.0)
+
+    # Several weights as one, and the other way round
+    combine_masses([part_1, part_2])        # 50 g at 35° again
+
+    # Computed for a radius of 150 mm, mounted at 200 mm
+    change_radius(correction, radius=150, new_radius=200)   # 37.5 g at 35°
+
+    # Remove material instead of adding a weight: the opposite side
+    opposite_position(correction)           # 50 g at -145°
+
+    # Only 5 g weights at hand
+    rounded = round_mass(MassVector(42.26, 30.0), step=5.0)
+    rounded.mass     # 40 g at 30°
+    rounded.error    # 2.26 g at -150° stays as unbalance
+
+    # What a set of fitted weights leaves compared with the ideal mass
+    mass_error(correction, [MassVector(40.0, 30.0), MassVector(10.0, 60.0)])
+
+Where a result is "no mass" (a weight that rounds to zero, a split that
+needs only one position), ``None`` is returned in its place.
+``InfluenceCoefficients.predict_vibration`` gives the vibration to expect
+with the weights actually fitted.
 
 
 Extracting Vibration Vectors from Measurements

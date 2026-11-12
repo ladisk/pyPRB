@@ -30,6 +30,9 @@ Features
   rule of thumb)
 * **VibrationExtractor**: Extracts vibration vectors from time-domain signals
 * **detect_rotation_freq**: Detects rotation frequency from a trigger signal
+* **Reading quality**: the 1× vector with its scatter over one record, the
+  speed variation during the record (**rotation_freq_variation**) and the
+  content at 1×, 2×, 3× against the overall level
 * Four pluggable extraction methods: **IQDemodulation** (default),
   **LeastSquaresFit**, **SynchronousAveraging**, **FFTExtraction**
 
@@ -408,6 +411,37 @@ Extracting Vibration Vectors from Measurements
     balancer = StaticBalancing(V_0, V_1, trial_mass=trial_mass)
     comp_mass = balancer.compute_compensation()
     # Output: Compensation mass: 2.01 g at position -30.8° on the rotor.
+
+
+How Good Is the Reading?
+~~~~~~~~~~~~~~~~~~~~~~~~
+
+Before a reading is used for balancing it is worth knowing how steady it
+is, whether the speed was constant and how much of the vibration is at the
+rotation frequency at all (continuing the example above):
+
+.. code-block:: python
+
+    from pyPRB import rotation_freq_variation
+
+    # The 1x vector of ten consecutive parts of the record
+    scatter = extractor.get_vector_scatter(signal_run0, trigger, n_parts=10)
+    scatter.vectors             # the cloud: one VibrationVector per part
+    scatter.mean                # mean vector, use it as the reading
+    scatter.amplitude_spread    # largest minus smallest amplitude
+    scatter.phase_spread        # range of the phases in degrees
+    scatter.relative_deviation  # radius of the cloud / mean amplitude
+
+    # Speed during the record, from the trigger edges
+    speed = rotation_freq_variation(trigger, sample_rate=sample_rate)
+    speed.mean, speed.minimum, speed.maximum    # Hz
+    speed.relative_range                        # (max - min) / mean
+
+    # Content at 1x, 2x, 3x and the overall level
+    content = extractor.get_harmonic_content(signal_run0)
+    content.amplitudes     # peak amplitudes at 1x, 2x, 3x
+    content.overall_rms    # r.m.s. of the whole signal
+    content.fraction_1x    # r.m.s. of 1x / overall: close to 1 for unbalance
 
 
 Balancing procedure

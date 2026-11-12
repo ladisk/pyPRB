@@ -122,10 +122,25 @@ Typical workflow:
 3. Call :meth:`~pyPRB.VibrationExtractor.get_vibration_vector` for each
    measurement run.
 
+To judge a reading, :meth:`~pyPRB.VibrationExtractor.get_vector_scatter`
+gives the vector with its scatter over the record,
+:func:`~pyPRB.rotation_freq_variation` the speed and its variation, and
+:meth:`~pyPRB.VibrationExtractor.get_harmonic_content` the content at 1×,
+2×, 3× against the overall level.
+
 detect_rotation_freq
 --------------------
 
 .. autofunction:: pyPRB.detect_rotation_freq
+
+
+rotation_freq_variation
+-----------------------
+
+.. autofunction:: pyPRB.rotation_freq_variation
+
+.. autoclass:: pyPRB.SpeedVariation
+   :members:
 
 
 VibrationExtractor
@@ -136,6 +151,13 @@ VibrationExtractor
    :special-members: __init__
    :undoc-members:
    :show-inheritance:
+
+
+.. autoclass:: pyPRB.VectorScatter
+   :members:
+
+.. autoclass:: pyPRB.HarmonicContent
+   :members:
 
 
 ExtractionMethod

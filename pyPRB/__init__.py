@@ -71,6 +71,7 @@ from .weights import (RoundedMass, change_radius, combine_masses, mass_error,
 from .trial import (TrialRunAssessment, assess_trial_run, centrifugal_force,
                     trial_mass_from_force, trial_mass_from_tolerance)
 from .processing import VibrationExtractor, IQDemodulation, LeastSquaresFit, SynchronousAveraging, FFTExtraction, detect_rotation_freq
+from .processing import HarmonicContent, SpeedVariation, VectorScatter, rotation_freq_variation
 from .__version__ import __version__, __author__, __email__
 
 # Define what gets imported with "from pyPRB import *"
@@ -110,5 +111,9 @@ __all__ = [
     'SynchronousAveraging',
     'FFTExtraction',
     'detect_rotation_freq',
+    'rotation_freq_variation',
+    'SpeedVariation',
+    'VectorScatter',
+    'HarmonicContent',
     '__version__',
 ]

@@ -81,6 +81,15 @@ IllConditionedWarning
    :show-inheritance:
 
 
+Balance tolerance
+=================
+
+.. automodule:: pyPRB.tolerance
+   :members:
+   :undoc-members:
+   :member-order: bysource
+
+
 Signal Processing
 =================
 

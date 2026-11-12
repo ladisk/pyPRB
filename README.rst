@@ -19,6 +19,9 @@ Features
   unbalance of a reading and a conditioning check
 * **Angle convention**: angles counted with (default) or against the
   direction of rotation, with **convert_angle** and **convert_convention**
+* **Balance tolerance**: permissible residual unbalance from a balance
+  quality grade G, rotor mass and service speed, its allocation to two
+  planes and a check of a residual against it
 * **VibrationExtractor**: Extracts vibration vectors from time-domain signals
 * **detect_rotation_freq**: Detects rotation frequency from a trigger signal
 * Four pluggable extraction methods: **IQDemodulation** (default),
@@ -249,6 +252,37 @@ the same place on the rotor either way:
 ``VibrationExtractor(..., angle_convention="against_rotation")`` returns
 the phase lag, and ``InfluenceCoefficients.to_convention()`` converts
 stored coefficients.
+
+
+Balance Tolerance
+~~~~~~~~~~~~~~~~~
+
+How good is good enough? For a balance quality grade ``G`` (mm/s), rotor
+mass ``M`` (kg) and service speed ``n`` (r/min) the permissible residual
+unbalance is ``U_per = 9549 * G * M / n`` in g·mm.
+
+.. code-block:: python
+
+    from pyPRB import (permissible_unbalance, permissible_specific_unbalance,
+                       permissible_mass, allocate_tolerance, check_residual,
+                       MassVector)
+
+    # 150 kg fan rotor, 1500 r/min, grade G 6.3
+    U_per = permissible_unbalance(6.3, 150, 1500)        # 6016 g·mm
+    e_per = permissible_specific_unbalance(6.3, 1500)    # 40.1 g·mm/kg (µm)
+    m_per = permissible_mass(6.3, 150, 1500, radius=400) # 15.0 g at 400 mm
+
+    # Share between two planes, 300 mm and 500 mm from the centre of mass
+    U_1, U_2 = allocate_tolerance(U_per, distance_1=300, distance_2=500)
+    # 3760 g·mm and 2256 g·mm (each share limited to 0.3 ... 0.7 of the total)
+
+    # A residual of 4.2 g at a radius of 400 mm in plane 1
+    check = check_residual(MassVector(4.2, 130), U_1, radius=400)
+    check.within, check.ratio     # True, 0.45
+
+The grade for a given machine and the rules for unusual rotors (for
+example overhung ones) are to be taken from ISO 21940-11; the allocation
+limits used by default are the commonly published ones and can be changed.
 
 
 Extracting Vibration Vectors from Measurements

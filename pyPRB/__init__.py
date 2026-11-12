@@ -62,6 +62,9 @@ from .core import (VibrationVector, MassVector, StaticBalancing,
                    DynamicBalancing, MultiPlaneBalancing,
                    InfluenceCoefficients, IllConditionedWarning)
 from .core import convert_angle, convert_convention
+from .tolerance import (BALANCE_QUALITY_GRADES, ToleranceCheck,
+                        allocate_tolerance, check_residual, permissible_mass,
+                        permissible_specific_unbalance, permissible_unbalance)
 from .processing import VibrationExtractor, IQDemodulation, LeastSquaresFit, SynchronousAveraging, FFTExtraction, detect_rotation_freq
 from .__version__ import __version__, __author__, __email__
 
@@ -76,6 +79,13 @@ __all__ = [
     'IllConditionedWarning',
     'convert_angle',
     'convert_convention',
+    'BALANCE_QUALITY_GRADES',
+    'ToleranceCheck',
+    'allocate_tolerance',
+    'check_residual',
+    'permissible_mass',
+    'permissible_specific_unbalance',
+    'permissible_unbalance',
     'VibrationExtractor',
     'IQDemodulation',
     'LeastSquaresFit',

@@ -99,6 +99,15 @@ Weight tools
    :member-order: bysource
 
 
+Trial mass
+==========
+
+.. automodule:: pyPRB.trial
+   :members:
+   :undoc-members:
+   :member-order: bysource
+
+
 Signal Processing
 =================
 

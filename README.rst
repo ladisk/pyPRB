@@ -25,6 +25,9 @@ Features
 * **Weight tools**: split a correction onto fixed positions or two allowed
   angles, combine weights, change the radius, add or remove, round to a
   weight step with the error that stays
+* **Trial mass**: a suggested trial mass from the centrifugal force rule or
+  from the tolerance, and an assessment of a trial run (the "30 % or 30°"
+  rule of thumb)
 * **VibrationExtractor**: Extracts vibration vectors from time-domain signals
 * **detect_rotation_freq**: Detects rotation frequency from a trigger signal
 * Four pluggable extraction methods: **IQDemodulation** (default),
@@ -331,6 +334,39 @@ Where a result is "no mass" (a weight that rounds to zero, a split that
 needs only one position), ``None`` is returned in its place.
 ``InfluenceCoefficients.predict_vibration`` gives the vibration to expect
 with the weights actually fitted.
+
+
+Trial Mass
+~~~~~~~~~~
+
+A trial mass must change the vibration enough to be measured, without
+overloading the machine. The suggestions are rules of thumb from balancing
+practice, with their numbers as parameters.
+
+.. code-block:: python
+
+    from pyPRB import (VibrationVector, trial_mass_from_force,
+                       trial_mass_from_tolerance, permissible_unbalance,
+                       assess_trial_run)
+
+    # Centrifugal force of the trial mass = 10 % of the rotor weight
+    # (150 kg rotor, 1500 r/min, mass mounted at a radius of 400 mm)
+    trial_mass_from_force(150, 1500, radius=400)                 # 14.9 g
+    trial_mass_from_force(150, 1500, radius=400, force_fraction=0.05)
+
+    # Five times the permissible residual mass
+    U_per = permissible_unbalance(6.3, 150, 1500)
+    trial_mass_from_tolerance(U_per, radius=400)                 # 75.2 g
+
+    # Did the trial mass change the reading enough?
+    a = assess_trial_run(VibrationVector(3.4, 116), VibrationVector(1.8, 42))
+    a.amplitude_change   # -0.47 (-47 %)
+    a.phase_change       # -74.0 degrees
+    a.adequate           # True: at least 30 % or at least 30 degrees
+
+The two suggestions can differ a lot (the force rule gives large masses at
+low speed); they are starting points, and the person balancing the machine
+decides.
 
 
 Extracting Vibration Vectors from Measurements

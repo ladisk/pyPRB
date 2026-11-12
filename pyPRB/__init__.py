@@ -68,6 +68,8 @@ from .tolerance import (BALANCE_QUALITY_GRADES, ToleranceCheck,
 from .weights import (RoundedMass, change_radius, combine_masses, mass_error,
                       opposite_position, round_mass, split_mass,
                       split_mass_on_positions)
+from .trial import (TrialRunAssessment, assess_trial_run, centrifugal_force,
+                    trial_mass_from_force, trial_mass_from_tolerance)
 from .processing import VibrationExtractor, IQDemodulation, LeastSquaresFit, SynchronousAveraging, FFTExtraction, detect_rotation_freq
 from .__version__ import __version__, __author__, __email__
 
@@ -97,6 +99,11 @@ __all__ = [
     'round_mass',
     'split_mass',
     'split_mass_on_positions',
+    'TrialRunAssessment',
+    'assess_trial_run',
+    'centrifugal_force',
+    'trial_mass_from_force',
+    'trial_mass_from_tolerance',
     'VibrationExtractor',
     'IQDemodulation',
     'LeastSquaresFit',

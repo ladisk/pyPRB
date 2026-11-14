@@ -29,7 +29,8 @@ Features
   from the tolerance, and an assessment of a trial run (the "30 % or 30°"
   rule of thumb)
 * **VibrationExtractor**: Extracts vibration vectors from time-domain signals
-* **detect_rotation_freq**: Detects rotation frequency from a trigger signal
+* **detect_rotation_freq**: Detects rotation frequency from the edges of a trigger
+  signal (or, with ``method="fft"``, from its spectrum)
 * **Reading quality**: the 1× vector with its scatter over one record, the
   speed variation during the record (**rotation_freq_variation**) and the
   content at 1×, 2×, 3× against the overall level

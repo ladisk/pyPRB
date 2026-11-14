@@ -841,7 +841,80 @@ class TestDetectRotationFreq:
         trigger = make_trigger(10.0, sr, 1.0)
 
         with pytest.raises(ValueError, match="No frequency bins found"):
-            detect_rotation_freq(trigger, sample_rate=sr, max_freq=0.01)
+            detect_rotation_freq(trigger, sample_rate=sr, max_freq=0.01,
+                                 method="fft")
+
+    @pytest.mark.parametrize("f0", [23.7, 31.3, 40.0])
+    @pytest.mark.parametrize("width", [0.5, 0.2, 0.1, 0.05, 0.02])
+    @pytest.mark.parametrize("method, rtol", [("edges", 1e-6),
+                                              ("fft", 0.01)])
+    def test_short_pulses_off_bin(self, f0, width, method, rtol):
+        """Short pulses at frequencies between FFT bins (issue #12)."""
+        sr, dur = 10000.0, 5.0
+        trigger = make_pulse_trigger(f0, sr, dur, edge_time=0.0013,
+                                     width=width)
+        detected = detect_rotation_freq(trigger, sample_rate=sr,
+                                        max_freq=150.0, method=method)
+        assert np.isclose(detected, f0, rtol=rtol)
+
+    def test_fft_without_max_freq(self):
+        """The sub-harmonic check also works when searching to Nyquist."""
+        trigger = make_pulse_trigger(23.7, 10000.0, 5.0, width=0.05)
+        detected = detect_rotation_freq(trigger, sample_rate=10000.0,
+                                        method="fft")
+        assert np.isclose(detected, 23.7, rtol=0.01)
+
+    def test_fft_pure_sine(self):
+        """A sinusoidal trigger has no sub-harmonic content."""
+        sr = 10000.0
+        t = np.arange(0, 2.0, 1 / sr)
+        trigger = np.sin(2 * np.pi * 37.0 * t)
+        assert np.isclose(detect_rotation_freq(trigger, sr, method="fft"),
+                          37.0, rtol=0.01)
+        assert np.isclose(detect_rotation_freq(trigger, sr), 37.0, rtol=1e-6)
+
+    def test_edges_missing_pulse(self):
+        """A missing pulse does not change the edge-based estimate."""
+        f0, sr, dur = 23.7, 10000.0, 2.0
+        trigger = make_pulse_trigger(f0, sr, dur, edge_time=0.0013, width=0.1)
+        t = np.arange(len(trigger)) / sr
+        revolution = np.floor((t - 0.0013) * f0 + 0.5)
+        trigger[revolution == 10] = 0.0
+        assert np.isclose(detect_rotation_freq(trigger, sr), f0, rtol=1e-6)
+
+    def test_edges_noisy_trigger(self):
+        """Noise on slow edges does not add edges."""
+        f0, sr = 23.7, 10000.0
+        trigger = make_pulse_trigger(f0, sr, 5.0, edge_time=0.0013,
+                                     width=0.05, rise_samples=40)
+        trigger += 0.05 * np.random.default_rng(1).standard_normal(len(trigger))
+        assert np.isclose(detect_rotation_freq(trigger, sr), f0, rtol=1e-4)
+
+    def test_edges_falling(self):
+        """Active-low pulse with edge='falling'."""
+        f0, sr = 31.3, 10000.0
+        trigger = make_pulse_trigger(f0, sr, 2.0, edge_time=0.0013,
+                                     width=0.05, inverted=True)
+        assert np.isclose(detect_rotation_freq(trigger, sr, edge="falling"),
+                          f0, rtol=1e-6)
+
+    def test_edges_too_few(self):
+        trigger = np.r_[np.zeros(100), np.ones(100), np.zeros(100)]
+        with pytest.raises(ValueError, match="At least two rising edges"):
+            detect_rotation_freq(trigger, 1000.0)
+
+    def test_edges_above_max_freq(self):
+        trigger = make_trigger(40.0, 10000.0, 1.0)
+        with pytest.raises(ValueError, match="exceeds max_freq"):
+            detect_rotation_freq(trigger, 10000.0, max_freq=30.0)
+
+    def test_invalid_method(self):
+        with pytest.raises(ValueError, match="method must be"):
+            detect_rotation_freq(np.zeros(10), 1000.0, method="peak")
+
+    def test_invalid_edge(self):
+        with pytest.raises(ValueError, match="edge must be"):
+            detect_rotation_freq(np.zeros(10), 1000.0, edge="both")
 
 
 class TestVibrationExtractor:

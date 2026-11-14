@@ -16,6 +16,8 @@ provided via the :class:`ExtractionMethod` protocol.
 """
 
 from ._vibration_extractor import ExtractionMethod, VibrationExtractor, detect_rotation_freq
+from ._vibration_extractor import (HarmonicContent, SpeedVariation, VectorScatter,
+                                   rotation_freq_variation)
 from .iq_demodulation import IQDemodulation
 from .least_squares_fit import LeastSquaresFit
 from .synchronous_averaging import SynchronousAveraging
@@ -25,6 +27,10 @@ __all__ = [
     "ExtractionMethod",
     "VibrationExtractor",
     "detect_rotation_freq",
+    "rotation_freq_variation",
+    "SpeedVariation",
+    "VectorScatter",
+    "HarmonicContent",
     "IQDemodulation",
     "LeastSquaresFit",
     "SynchronousAveraging",

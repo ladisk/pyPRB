@@ -13,8 +13,26 @@ Features
 * **DynamicBalancing**: Two-plane balancing for rotors
 * **MultiPlaneBalancing**: Balancing in any number of correction planes,
   with least-squares solution when there are more measurement points than planes
+* **InfluenceCoefficients**: Influence coefficients as a reusable object:
+  stored and loaded as plain data, corrections and trim corrections without
+  trial runs, predicted vibration for the weights actually fitted, residual
+  unbalance of a reading and a conditioning check
+* **Angle convention**: angles counted with (default) or against the
+  direction of rotation, with **convert_angle** and **convert_convention**
+* **Balance tolerance**: permissible residual unbalance from a balance
+  quality grade G, rotor mass and service speed, its allocation to two
+  planes and a check of a residual against it
+* **Weight tools**: split a correction onto fixed positions or two allowed
+  angles, combine weights, change the radius, add or remove, round to a
+  weight step with the error that stays
+* **Trial mass**: a suggested trial mass from the centrifugal force rule or
+  from the tolerance, and an assessment of a trial run (the "30 % or 30°"
+  rule of thumb)
 * **VibrationExtractor**: Extracts vibration vectors from time-domain signals
 * **detect_rotation_freq**: Detects rotation frequency from a trigger signal
+* **Reading quality**: the 1× vector with its scatter over one record, the
+  speed variation during the record (**rotation_freq_variation**) and the
+  content at 1×, 2×, 3× against the overall level
 * Four pluggable extraction methods: **IQDemodulation** (default),
   **LeastSquaresFit**, **SynchronousAveraging**, **FFTExtraction**
 
@@ -152,6 +170,208 @@ For ``M > N`` the least-squares solution is returned.
     residual = balancer.residual_vibration()        # predicted vibration
 
 
+Trial Masses Left On and Stored Influence Coefficients
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+A trial mass is often welded or clamped and stays on the rotor. With
+``trial_left_on=True`` every trial run is compared with the run before it,
+and ``keep_trial_masses=True`` gives the masses to add while the trial
+masses stay. The influence coefficients can be kept for the next job on the
+same machine (same speed, sensors and phase mark), which then needs only
+one reading and no trial runs.
+
+.. code-block:: python
+
+    import json
+    from pyPRB import (VibrationVector, MassVector, MultiPlaneBalancing,
+                       InfluenceCoefficients)
+
+    V_0 = [VibrationVector(7.2, 238), VibrationVector(13.5, 296)]
+    V_trial = [
+        [VibrationVector(4.9, 114), VibrationVector(9.2, 347)],   # mass 1 on
+        [VibrationVector(6.1, 30), VibrationVector(8.0, 340)],    # masses 1 and 2 on
+    ]
+    trial_masses = [MassVector(2.5, 0.0), MassVector(2.5, 0.0)]
+
+    balancer = MultiPlaneBalancing(V_0, V_trial, trial_masses,
+                                   trial_left_on=True)
+    to_add = balancer.compute_compensation(keep_trial_masses=True)
+
+    # Keep the coefficients for the next job
+    coefficients = balancer.get_influence_coefficients()
+    with open("machine.json", "w") as f:
+        json.dump(coefficients.to_dict(), f)
+
+    # Later: one check reading gives the trim correction, no trial runs
+    with open("machine.json") as f:
+        coefficients = InfluenceCoefficients.from_dict(json.load(f))
+    check = [VibrationVector(0.9, 75), VibrationVector(1.4, 310)]
+    trim = coefficients.compute_compensation(check)
+
+    # Vibration to expect with the weights actually fitted
+    fitted = [MassVector(0.3, 45), None]          # nothing in plane 2
+    expected = coefficients.predict_vibration(check, fitted)
+
+    # The reading as an equivalent unbalance in each plane
+    heavy_spots = coefficients.residual_unbalance(check)
+
+    coefficients.check_conditioning()   # warns if the planes are hard to separate
+
+
+Angle Convention
+~~~~~~~~~~~~~~~~
+
+By default all angles are counted from the trigger/datum mark **in the
+direction of rotation** (``angle_convention="with_rotation"``). Many
+balancing instruments count **against** the rotation and show the phase as
+a lag. Seen from the side on which the rotor turns counter-clockwise::
+
+        "with_rotation"                 "against_rotation"
+
+             90°                              270°
+              |                                |
+      180° ---+--- 0° (mark)          180° ---+--- 0° (mark)
+              |                                |
+             270°                             90°
+
+        rotation: counter-clockwise in both pictures
+
+A convention covers the phase readings and the weight positions together;
+the result is in the convention of the input. The same physical case gives
+the same place on the rotor either way:
+
+.. code-block:: python
+
+    from pyPRB import (VibrationVector, MassVector, StaticBalancing,
+                       convert_angle, convert_convention)
+
+    # Readings and trial position as an instrument shows them
+    balancer = StaticBalancing(
+        VibrationVector(3.4, 244), VibrationVector(1.8, 318),
+        trial_mass=MassVector(2.0, 0.0),
+        angle_convention="against_rotation")
+    comp = balancer.compute_compensation()
+    # Compensation mass: 2.01 g at position 30.8° on the rotor
+    # (angles measured against the direction of rotation).
+
+    convert_convention(comp, "against_rotation", "with_rotation")
+    # MassVector(amplitude=2.01168, phase=-30.7888°, units='g')
+    convert_angle(244, "against_rotation", "with_rotation")   # 116.0
+
+``VibrationExtractor(..., angle_convention="against_rotation")`` returns
+the phase lag, and ``InfluenceCoefficients.to_convention()`` converts
+stored coefficients.
+
+
+Balance Tolerance
+~~~~~~~~~~~~~~~~~
+
+How good is good enough? For a balance quality grade ``G`` (mm/s), rotor
+mass ``M`` (kg) and service speed ``n`` (r/min) the permissible residual
+unbalance is ``U_per = 9549 * G * M / n`` in g·mm.
+
+.. code-block:: python
+
+    from pyPRB import (permissible_unbalance, permissible_specific_unbalance,
+                       permissible_mass, allocate_tolerance, check_residual,
+                       MassVector)
+
+    # 150 kg fan rotor, 1500 r/min, grade G 6.3
+    U_per = permissible_unbalance(6.3, 150, 1500)        # 6016 g·mm
+    e_per = permissible_specific_unbalance(6.3, 1500)    # 40.1 g·mm/kg (µm)
+    m_per = permissible_mass(6.3, 150, 1500, radius=400) # 15.0 g at 400 mm
+
+    # Share between two planes, 300 mm and 500 mm from the centre of mass
+    U_1, U_2 = allocate_tolerance(U_per, distance_1=300, distance_2=500)
+    # 3760 g·mm and 2256 g·mm (each share limited to 0.3 ... 0.7 of the total)
+
+    # A residual of 4.2 g at a radius of 400 mm in plane 1
+    check = check_residual(MassVector(4.2, 130), U_1, radius=400)
+    check.within, check.ratio     # True, 0.45
+
+The grade for a given machine and the rules for unusual rotors (for
+example overhung ones) are to be taken from ISO 21940-11; the allocation
+limits used by default are the commonly published ones and can be changed.
+
+
+Weight Tools
+~~~~~~~~~~~~
+
+The computed compensation is one mass at one angle. What is fitted is often
+something else: weights on blades or in bolt holes, at another radius,
+drilled out instead of added, rounded to the weights at hand.
+
+.. code-block:: python
+
+    from pyPRB import (MassVector, split_mass, split_mass_on_positions,
+                       combine_masses, change_radius, opposite_position,
+                       round_mass, mass_error)
+
+    correction = MassVector(50.0, 35.0)
+
+    # 12-blade fan, blade 0 at 0°: the two nearest blades
+    split_mass_on_positions(correction, n_positions=12)
+    # [(1, MassVector(42.26 g, 30°)), (2, MassVector(8.72 g, 60°))]
+
+    # Two arbitrary allowed angles
+    part_1, part_2 = split_mass(correction, 20.0, 80.0)
+
+    # Several weights as one, and the other way round
+    combine_masses([part_1, part_2])        # 50 g at 35° again
+
+    # Computed for a radius of 150 mm, mounted at 200 mm
+    change_radius(correction, radius=150, new_radius=200)   # 37.5 g at 35°
+
+    # Remove material instead of adding a weight: the opposite side
+    opposite_position(correction)           # 50 g at -145°
+
+    # Only 5 g weights at hand
+    rounded = round_mass(MassVector(42.26, 30.0), step=5.0)
+    rounded.mass     # 40 g at 30°
+    rounded.error    # 2.26 g at -150° stays as unbalance
+
+    # What a set of fitted weights leaves compared with the ideal mass
+    mass_error(correction, [MassVector(40.0, 30.0), MassVector(10.0, 60.0)])
+
+Where a result is "no mass" (a weight that rounds to zero, a split that
+needs only one position), ``None`` is returned in its place.
+``InfluenceCoefficients.predict_vibration`` gives the vibration to expect
+with the weights actually fitted.
+
+
+Trial Mass
+~~~~~~~~~~
+
+A trial mass must change the vibration enough to be measured, without
+overloading the machine. The suggestions are rules of thumb from balancing
+practice, with their numbers as parameters.
+
+.. code-block:: python
+
+    from pyPRB import (VibrationVector, trial_mass_from_force,
+                       trial_mass_from_tolerance, permissible_unbalance,
+                       assess_trial_run)
+
+    # Centrifugal force of the trial mass = 10 % of the rotor weight
+    # (150 kg rotor, 1500 r/min, mass mounted at a radius of 400 mm)
+    trial_mass_from_force(150, 1500, radius=400)                 # 14.9 g
+    trial_mass_from_force(150, 1500, radius=400, force_fraction=0.05)
+
+    # Five times the permissible residual mass
+    U_per = permissible_unbalance(6.3, 150, 1500)
+    trial_mass_from_tolerance(U_per, radius=400)                 # 75.2 g
+
+    # Did the trial mass change the reading enough?
+    a = assess_trial_run(VibrationVector(3.4, 116), VibrationVector(1.8, 42))
+    a.amplitude_change   # -0.47 (-47 %)
+    a.phase_change       # -74.0 degrees
+    a.adequate           # True: at least 30 % or at least 30 degrees
+
+The two suggestions can differ a lot (the force rule gives large masses at
+low speed); they are starting points, and the person balancing the machine
+decides.
+
+
 Extracting Vibration Vectors from Measurements
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
@@ -191,6 +411,37 @@ Extracting Vibration Vectors from Measurements
     balancer = StaticBalancing(V_0, V_1, trial_mass=trial_mass)
     comp_mass = balancer.compute_compensation()
     # Output: Compensation mass: 2.01 g at position -30.8° on the rotor.
+
+
+How Good Is the Reading?
+~~~~~~~~~~~~~~~~~~~~~~~~
+
+Before a reading is used for balancing it is worth knowing how steady it
+is, whether the speed was constant and how much of the vibration is at the
+rotation frequency at all (continuing the example above):
+
+.. code-block:: python
+
+    from pyPRB import rotation_freq_variation
+
+    # The 1x vector of ten consecutive parts of the record
+    scatter = extractor.get_vector_scatter(signal_run0, trigger, n_parts=10)
+    scatter.vectors             # the cloud: one VibrationVector per part
+    scatter.mean                # mean vector, use it as the reading
+    scatter.amplitude_spread    # largest minus smallest amplitude
+    scatter.phase_spread        # range of the phases in degrees
+    scatter.relative_deviation  # radius of the cloud / mean amplitude
+
+    # Speed during the record, from the trigger edges
+    speed = rotation_freq_variation(trigger, sample_rate=sample_rate)
+    speed.mean, speed.minimum, speed.maximum    # Hz
+    speed.relative_range                        # (max - min) / mean
+
+    # Content at 1x, 2x, 3x and the overall level
+    content = extractor.get_harmonic_content(signal_run0)
+    content.amplitudes     # peak amplitudes at 1x, 2x, 3x
+    content.overall_rms    # r.m.s. of the whole signal
+    content.fraction_1x    # r.m.s. of 1x / overall: close to 1 for unbalance
 
 
 Balancing procedure

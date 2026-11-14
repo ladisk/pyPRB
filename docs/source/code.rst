@@ -4,6 +4,17 @@ Code documentation
 This page provides detailed documentation for all classes and methods in the
 rotor-balancing package.
 
+Angle convention
+----------------
+
+.. automodule:: pyPRB.core
+   :no-members:
+
+.. autofunction:: pyPRB.convert_angle
+
+.. autofunction:: pyPRB.convert_convention
+
+
 VibrationVector
 ---------------
 
@@ -54,11 +65,47 @@ MultiPlaneBalancing
    :show-inheritance:
 
 
+InfluenceCoefficients
+---------------------
+
+.. autoclass:: pyPRB.InfluenceCoefficients
+   :members:
+   :special-members: __init__, __repr__
+   :undoc-members:
+   :show-inheritance:
+
 IllConditionedWarning
 ---------------------
 
 .. autoclass:: pyPRB.IllConditionedWarning
    :show-inheritance:
+
+
+Balance tolerance
+=================
+
+.. automodule:: pyPRB.tolerance
+   :members:
+   :undoc-members:
+   :member-order: bysource
+
+
+Weight tools
+============
+
+.. automodule:: pyPRB.weights
+   :members:
+   :undoc-members:
+   :member-order: bysource
+
+
+Trial mass
+==========
+
+.. automodule:: pyPRB.trial
+   :members:
+   :undoc-members:
+   :member-order: bysource
 
 
 Signal Processing
@@ -75,10 +122,25 @@ Typical workflow:
 3. Call :meth:`~pyPRB.VibrationExtractor.get_vibration_vector` for each
    measurement run.
 
+To judge a reading, :meth:`~pyPRB.VibrationExtractor.get_vector_scatter`
+gives the vector with its scatter over the record,
+:func:`~pyPRB.rotation_freq_variation` the speed and its variation, and
+:meth:`~pyPRB.VibrationExtractor.get_harmonic_content` the content at 1×,
+2×, 3× against the overall level.
+
 detect_rotation_freq
 --------------------
 
 .. autofunction:: pyPRB.detect_rotation_freq
+
+
+rotation_freq_variation
+-----------------------
+
+.. autofunction:: pyPRB.rotation_freq_variation
+
+.. autoclass:: pyPRB.SpeedVariation
+   :members:
 
 
 VibrationExtractor
@@ -89,6 +151,13 @@ VibrationExtractor
    :special-members: __init__
    :undoc-members:
    :show-inheritance:
+
+
+.. autoclass:: pyPRB.VectorScatter
+   :members:
+
+.. autoclass:: pyPRB.HarmonicContent
+   :members:
 
 
 ExtractionMethod

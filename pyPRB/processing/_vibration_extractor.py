@@ -4,9 +4,10 @@ from __future__ import annotations
 
 import numpy as np
 
-from typing import Protocol, runtime_checkable
+from typing import NamedTuple, Protocol, runtime_checkable
 
-from ..core import VibrationVector
+from ..core import AGAINST_ROTATION, WITH_ROTATION, VibrationVector
+from ..core import _check_convention
 
 
 @runtime_checkable
@@ -266,6 +267,146 @@ def _plot_rotation_freq(
     plt.show(block=True)
 
 
+class SpeedVariation(NamedTuple):
+    """Result of :func:`rotation_freq_variation`."""
+
+    #: Mean rotation frequency over the record in Hz.
+    mean: float
+    #: Lowest value in Hz.
+    minimum: float
+    #: Highest value in Hz.
+    maximum: float
+    #: Standard deviation of the values in Hz.
+    std: float
+    #: ``(maximum - minimum) / mean``.
+    relative_range: float
+    #: Rotation frequency in Hz of each block of revolutions, in time order.
+    values: np.ndarray
+    #: Number of whole revolutions found in the record.
+    n_revolutions: int
+
+
+def rotation_freq_variation(
+    trigger: np.ndarray,
+    sample_rate: float,
+    revolutions_per_value: int = 10,
+    edge: str = "rising",
+) -> SpeedVariation:
+    """Measure the rotation frequency and its variation over a record.
+
+    The times of the once-per-revolution trigger edges are located (with
+    linear interpolation between samples) and the rotation frequency is
+    computed for consecutive blocks of revolutions.  A balancing reading
+    is only meaningful if the speed is steady during the record and the
+    same in all runs.
+
+    Parameters
+    ----------
+    trigger : np.ndarray
+        Trigger signal with one pulse per revolution.
+    sample_rate : float
+        Sampling rate in Hz.
+    revolutions_per_value : int
+        Number of revolutions over which each frequency value is taken.
+        Default is 10.  One revolution gives the finest time resolution,
+        but the timing error of one sample then shows up as apparent
+        speed variation of about ``rotation_freq / sample_rate``.
+    edge : str
+        Trigger edge to use, ``'rising'`` (default) or ``'falling'``.
+
+    Returns
+    -------
+    SpeedVariation
+        Named tuple ``(mean, minimum, maximum, std, relative_range,
+        values, n_revolutions)``, frequencies in Hz.
+
+    Raises
+    ------
+    ValueError
+        If the record holds fewer than ``revolutions_per_value``
+        revolutions.
+
+    Examples
+    --------
+    >>> import numpy as np
+    >>> from pyPRB import rotation_freq_variation
+    >>> t = np.arange(0, 4, 1 / 10000)
+    >>> trigger = np.sign(np.sin(2 * np.pi * 25.0 * t + 0.3))
+    >>> speed = rotation_freq_variation(trigger, sample_rate=10000)
+    >>> round(speed.mean, 2), speed.n_revolutions
+    (25.0, 99)
+    >>> bool(speed.relative_range < 0.001)
+    True
+    """
+    if sample_rate <= 0:
+        raise ValueError(f"sample_rate must be positive, got {sample_rate}.")
+    if edge not in ("rising", "falling"):
+        raise ValueError(f"edge must be 'rising' or 'falling', got {edge!r}.")
+    if (not isinstance(revolutions_per_value, (int, np.integer))
+            or revolutions_per_value < 1):
+        raise ValueError(
+            "revolutions_per_value must be a positive integer, got "
+            f"{revolutions_per_value!r}.")
+
+    x = np.asarray(trigger, dtype=float)
+    if edge == "falling":
+        x = -x
+    threshold = 0.5 * (np.min(x) + np.max(x))
+    above = x > threshold
+    idx = np.where(~above[:-1] & above[1:])[0]
+    if len(idx) < revolutions_per_value + 1:
+        raise ValueError(
+            f"Found {max(len(idx) - 1, 0)} whole revolutions in the trigger "
+            f"signal; at least {revolutions_per_value} are needed.")
+    fraction = (threshold - x[idx]) / (x[idx + 1] - x[idx])
+    times = (idx + fraction) / sample_rate
+
+    block_times = times[::revolutions_per_value]
+    values = revolutions_per_value / np.diff(block_times)
+    mean = (len(times) - 1) / (times[-1] - times[0])
+    return SpeedVariation(
+        mean=float(mean),
+        minimum=float(np.min(values)),
+        maximum=float(np.max(values)),
+        std=float(np.std(values)),
+        relative_range=float((np.max(values) - np.min(values)) / mean),
+        values=values,
+        n_revolutions=int(len(times) - 1),
+    )
+
+
+class VectorScatter(NamedTuple):
+    """Result of :meth:`VibrationExtractor.get_vector_scatter`."""
+
+    #: 1x vector of each consecutive part of the record (the cloud).
+    vectors: list
+    #: Mean vector (the complex mean of the cloud).
+    mean: VibrationVector
+    #: Largest minus smallest amplitude in the cloud.
+    amplitude_spread: float
+    #: Range of the phases about the mean vector in degrees
+    #: (``nan`` if the mean vector is zero).
+    phase_spread: float
+    #: Largest distance of a vector from the mean vector.
+    max_deviation: float
+    #: ``max_deviation`` divided by the amplitude of the mean vector.
+    relative_deviation: float
+
+
+class HarmonicContent(NamedTuple):
+    """Result of :meth:`VibrationExtractor.get_harmonic_content`."""
+
+    #: Orders (multiples of the rotation frequency).
+    orders: tuple
+    #: Peak amplitude at each order.
+    amplitudes: tuple
+    #: Overall level: r.m.s. of the signal without its mean.
+    overall_rms: float
+    #: R.m.s. of the 1x component divided by the overall level
+    #: (``nan`` if order 1 is not among the orders).
+    fraction_1x: float
+
+
 class VibrationExtractor:
     """Extracts vibration vectors from time-domain signals.
 
@@ -285,6 +426,13 @@ class VibrationExtractor:
     method : ExtractionMethod, optional
         Extraction method to use.  Defaults to
         :class:`IQDemodulation` with default settings.
+    angle_convention : {"with_rotation", "against_rotation"}, optional
+        With "with_rotation" (default) the phase of the returned vectors
+        is the angle by which the vibration leads the trigger, which goes
+        with weight positions counted in the direction of rotation.  With
+        "against_rotation" it is the phase lag, which goes with weight
+        positions counted against the direction of rotation, as many
+        balancing instruments do.
 
     Examples
     --------
@@ -298,7 +446,9 @@ class VibrationExtractor:
         sample_rate: float,
         rotation_freq: float,
         method: ExtractionMethod | None = None,
+        angle_convention: str = WITH_ROTATION,
     ):
+        self.angle_convention = _check_convention(angle_convention)
         if sample_rate <= 0:
             raise ValueError(f"sample_rate must be positive, got {sample_rate}.")
         if rotation_freq <= 0:
@@ -336,4 +486,201 @@ class VibrationExtractor:
         amplitude, phase_deg = self.method.extract(
             signal, trigger, self.sample_rate, self.rotation_freq
         )
+        if self.angle_convention == AGAINST_ROTATION:
+            phase_deg = -phase_deg
         return VibrationVector(amplitude=amplitude, phase=phase_deg)
+
+    def get_vibration_vectors(
+        self,
+        signal: np.ndarray,
+        trigger: np.ndarray,
+        n_parts: int = 10,
+    ) -> list:
+        """Extract the 1x vector of consecutive parts of one record.
+
+        The record is cut into ``n_parts`` parts of equal length and the
+        vector of each part is extracted like in
+        :meth:`get_vibration_vector`.  For a steady machine all vectors
+        coincide; their scatter shows how repeatable a reading is.
+
+        Parameters
+        ----------
+        signal : np.ndarray
+            Response signal.
+        trigger : np.ndarray
+            Trigger signal of the same length.
+        n_parts : int
+            Number of parts, at least 2.  Default is 10.  Each part must
+            hold at least two revolutions.
+
+        Returns
+        -------
+        list of VibrationVector
+            One vector per part, in time order.
+        """
+        signal = np.asarray(signal)
+        trigger = np.asarray(trigger)
+        if not isinstance(n_parts, (int, np.integer)) or n_parts < 2:
+            raise ValueError(
+                f"n_parts must be an integer of at least 2, got {n_parts!r}.")
+        if len(signal) != len(trigger):
+            raise ValueError(
+                f"signal and trigger must have the same length, got "
+                f"{len(signal)} and {len(trigger)}.")
+        part = len(signal) // n_parts
+        if part < 2 * self.sample_rate / self.rotation_freq:
+            raise ValueError(
+                f"Each of the {n_parts} parts must hold at least two "
+                f"revolutions; the record is too short ({part} samples per "
+                "part). Use fewer parts or a longer record.")
+        return [
+            self.get_vibration_vector(signal[k * part:(k + 1) * part],
+                                      trigger[k * part:(k + 1) * part])
+            for k in range(n_parts)
+        ]
+
+    def get_vector_scatter(
+        self,
+        signal: np.ndarray,
+        trigger: np.ndarray,
+        n_parts: int = 10,
+    ) -> VectorScatter:
+        """Extract the 1x vector with its scatter over one record.
+
+        Parameters
+        ----------
+        signal : np.ndarray
+            Response signal.
+        trigger : np.ndarray
+            Trigger signal of the same length.
+        n_parts : int
+            Number of consecutive parts, at least 2.  Default is 10.
+
+        Returns
+        -------
+        VectorScatter
+            Named tuple ``(vectors, mean, amplitude_spread, phase_spread,
+            max_deviation, relative_deviation)``.  ``vectors`` is the
+            cloud of the parts, ``mean`` their mean vector and
+            ``max_deviation`` the radius of the circle about the mean
+            vector that holds all of them.
+
+        Notes
+        -----
+        The scatter over the parts of one record shows noise and
+        unsteadiness during the record.  It does not show what changes
+        between runs (speed, temperature, a mass that moved).  The
+        rotation frequency is taken as constant over the record; see
+        :func:`rotation_freq_variation`.
+
+        Examples
+        --------
+        >>> import numpy as np
+        >>> from pyPRB import VibrationExtractor
+        >>> t = np.arange(0, 4, 1 / 10000)
+        >>> trigger = np.cos(2 * np.pi * 25.0 * t)   # once-per-revolution
+        >>> signal = 3.4 * np.cos(2 * np.pi * 25.0 * t + np.deg2rad(116))
+        >>> extractor = VibrationExtractor(sample_rate=10000, rotation_freq=25.0)
+        >>> scatter = extractor.get_vector_scatter(signal, trigger, n_parts=8)
+        >>> len(scatter.vectors)
+        8
+        >>> print(scatter.mean)
+        VibrationVector(amplitude=3.4, phase=116°)
+        >>> bool(scatter.relative_deviation < 1e-6)
+        True
+        """
+        vectors = self.get_vibration_vectors(signal, trigger, n_parts)
+        z = np.array([v.complex_num for v in vectors])
+        mean = complex(np.mean(z))
+        amplitudes = np.abs(z)
+        max_deviation = float(np.max(np.abs(z - mean)))
+        if abs(mean) > 0:
+            deviation = np.rad2deg(np.angle(z / mean))
+            phase_spread = float(np.max(deviation) - np.min(deviation))
+            relative_deviation = max_deviation / abs(mean)
+        else:
+            phase_spread = float("nan")
+            relative_deviation = float("inf") if max_deviation > 0 else 0.0
+        return VectorScatter(
+            vectors=vectors,
+            mean=VibrationVector.from_complex(mean),
+            amplitude_spread=float(np.max(amplitudes) - np.min(amplitudes)),
+            phase_spread=phase_spread,
+            max_deviation=max_deviation,
+            relative_deviation=float(relative_deviation),
+        )
+
+    def get_harmonic_content(
+        self,
+        signal: np.ndarray,
+        orders: tuple = (1, 2, 3),
+    ) -> HarmonicContent:
+        """Measure the content at multiples of the rotation frequency.
+
+        Unbalance shows at 1x.  If the 1x component is only a small part
+        of the overall level, or 2x and 3x are large, the vibration has
+        other causes as well and balancing alone will not remove it.
+
+        The amplitudes are obtained by correlation with a sine and a
+        cosine at each order over a whole number of revolutions,
+        independently of the extraction method of the extractor.
+
+        Parameters
+        ----------
+        signal : np.ndarray
+            Response signal.
+        orders : sequence of int
+            Orders to evaluate.  Default is ``(1, 2, 3)``.
+
+        Returns
+        -------
+        HarmonicContent
+            Named tuple ``(orders, amplitudes, overall_rms, fraction_1x)``:
+            the peak amplitude at each order, the overall r.m.s. level of
+            the signal (mean removed) and the r.m.s. of the 1x component
+            as a fraction of it.
+
+        Examples
+        --------
+        >>> import numpy as np
+        >>> from pyPRB import VibrationExtractor
+        >>> t = np.arange(0, 4, 1 / 10000)
+        >>> signal = (3.0 * np.cos(2 * np.pi * 25.0 * t + 1.0)
+        ...           + 1.0 * np.cos(2 * np.pi * 50.0 * t))
+        >>> extractor = VibrationExtractor(sample_rate=10000, rotation_freq=25.0)
+        >>> content = extractor.get_harmonic_content(signal)
+        >>> [round(a, 3) for a in content.amplitudes]
+        [3.0, 1.0, 0.0]
+        >>> round(content.fraction_1x, 3)
+        0.949
+        """
+        orders = tuple(orders)
+        if len(orders) == 0 or any(
+                not float(k).is_integer() or k < 1 for k in orders):
+            raise ValueError(
+                f"orders must be positive integers, got {orders!r}.")
+        orders = tuple(int(k) for k in orders)
+        if max(orders) * self.rotation_freq >= self.sample_rate / 2:
+            raise ValueError(
+                f"Order {max(orders)} is above half the sampling rate.")
+        signal = np.asarray(signal, dtype=float)
+        period = self.sample_rate / self.rotation_freq
+        n_periods = int(len(signal) / period)
+        if n_periods < 1:
+            raise ValueError(
+                "The signal is shorter than one revolution.")
+        x = signal[:int(round(n_periods * period))]
+        x = x - np.mean(x)
+        t = np.arange(len(x)) / self.sample_rate
+        amplitudes = tuple(
+            float(2 * np.abs(np.mean(
+                x * np.exp(-2j * np.pi * k * self.rotation_freq * t))))
+            for k in orders)
+        overall_rms = float(np.sqrt(np.mean(x ** 2)))
+        if 1 in orders and overall_rms > 0:
+            fraction_1x = amplitudes[orders.index(1)] / np.sqrt(2) / overall_rms
+        else:
+            fraction_1x = float("nan")
+        return HarmonicContent(orders=orders, amplitudes=amplitudes,
+                               overall_rms=overall_rms,
+                               fraction_1x=float(fraction_1x))

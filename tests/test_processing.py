@@ -1008,3 +1008,349 @@ class TestCrossMethodAgreement:
         # All phases should agree within 5 degrees
         for p in [iq_phase, ls_phase, sa_phase, fft_phase]:
             assert np.isclose(p, phase, atol=5.0)
+
+
+# ===========================================================================
+# Angle convention
+# ===========================================================================
+
+class TestExtractorAngleConvention:
+    """Phase lead (with rotation) or phase lag (against rotation)."""
+
+    def test_phase_lag(self):
+        """The against-rotation phase is the lag: 360° minus the lead."""
+        f0, sr, dur = 25.0, 10000.0, 4.0
+        trigger = make_trigger(f0, sr, dur)
+        signal = make_vibration(f0, 2.0, 70.0, sr, dur)
+        lead = VibrationExtractor(sr, f0).get_vibration_vector(
+            signal, trigger)
+        lag = VibrationExtractor(
+            sr, f0, angle_convention="against_rotation"
+        ).get_vibration_vector(signal, trigger)
+        assert np.isclose(lead.phase, 70.0, atol=0.5)
+        assert np.isclose(lag.phase, 290.0, atol=0.5)
+        assert np.isclose(lag.amplitude, lead.amplitude)
+
+    def test_default_and_invalid(self):
+        extractor = VibrationExtractor(10000, 25.0)
+        assert extractor.angle_convention == "with_rotation"
+        with pytest.raises(ValueError, match="angle_convention must be one"):
+            VibrationExtractor(10000, 25.0, angle_convention="clockwise")
+
+    @pytest.mark.parametrize("method_cls", [IQDemodulation, LeastSquaresFit,
+                                            FFTExtraction])
+    def test_same_physical_correction_from_signals(self, method_cls):
+        """Signals -> correction: the same place on the rotor both ways.
+
+        A heavy spot of 3 g sits 140° ahead of the mark (in the direction
+        of rotation); the trial mass of 2 g is mounted 60° ahead of the
+        mark.  One user counts with the rotation, the other against it.
+        Both must be told to add 3 g opposite the heavy spot.
+        """
+        from pyPRB import MassVector, StaticBalancing, convert_convention
+        f0, sr, dur = 25.0, 10000.0, 4.0
+        heavy = 3.0 * np.exp(1j * np.deg2rad(140.0))
+        trial = 2.0 * np.exp(1j * np.deg2rad(60.0))
+        response = 0.8 * np.exp(1j * np.deg2rad(-35.0))  # per gram, with lag
+
+        def record(unbalance):
+            v = response * unbalance
+            return make_vibration(f0, abs(v), np.rad2deg(np.angle(v)),
+                                  sr, dur)
+
+        trigger = make_trigger(f0, sr, dur)
+        run_0, run_1 = record(heavy), record(heavy + trial)
+
+        results = {}
+        for convention, trial_position in (("with_rotation", 60.0),
+                                           ("against_rotation", 300.0)):
+            extractor = VibrationExtractor(sr, f0, method=method_cls(),
+                                           angle_convention=convention)
+            balancer = StaticBalancing(
+                extractor.get_vibration_vector(run_0, trigger),
+                extractor.get_vibration_vector(run_1, trigger),
+                MassVector(2.0, trial_position),
+                angle_convention=convention)
+            results[convention] = balancer.compute_compensation(repr=False)
+
+        with_rot = results["with_rotation"]
+        against = results["against_rotation"]
+        assert np.isclose(with_rot.amplitude, 3.0, rtol=1e-3)
+        assert np.isclose(with_rot.phase, 140.0 - 180.0, atol=0.1)
+        assert np.isclose(against.amplitude, 3.0, rtol=1e-3)
+        assert np.isclose(against.phase, 40.0, atol=0.1)       # 360° - 320°
+        back = convert_convention(against, "against_rotation",
+                                  "with_rotation")
+        assert np.isclose(back.phase, with_rot.phase, atol=1e-6)
+
+
+# ===========================================================================
+# The 1x vector with its scatter, speed variation, harmonic content
+# ===========================================================================
+
+class TestVectorScatter:
+    """The 1x vector over consecutive parts of one record."""
+
+    F0, SR, DUR = 25.0, 10000.0, 8.0
+
+    def _extractor(self, **kwargs):
+        return VibrationExtractor(self.SR, self.F0, **kwargs)
+
+    def test_steady_signal(self):
+        """A steady record: all parts coincide with the single vector.
+
+        A sinusoidal once-per-revolution reference is used, so that the
+        sample-wide timing steps of a square trigger do not show.
+        """
+        t = np.arange(0, self.DUR, 1 / self.SR)
+        trigger = np.cos(2 * np.pi * self.F0 * t)
+        signal = make_vibration(self.F0, 2.0, 70.0, self.SR, self.DUR)
+        extractor = self._extractor()
+        vectors = extractor.get_vibration_vectors(signal, trigger, n_parts=8)
+        assert len(vectors) == 8
+        assert all(isinstance(v, VibrationVector) for v in vectors)
+        single = extractor.get_vibration_vector(signal, trigger)
+        scatter = extractor.get_vector_scatter(signal, trigger, n_parts=8)
+        assert np.isclose(scatter.mean.amplitude, single.amplitude, rtol=1e-6)
+        assert np.isclose(scatter.mean.phase, single.phase, atol=1e-4)
+        assert scatter.amplitude_spread < 1e-6
+        assert scatter.phase_spread < 1e-4
+        assert scatter.max_deviation < 1e-6
+        assert scatter.relative_deviation < 1e-6
+
+    def test_published_example_through_signals(self):
+        """Example 2 of the B&K application note from noisy records.
+
+        J. Vaughan, "Static and Dynamic Balancing using portable measuring
+        equipment", Brüel & Kjær: readings 3.4 @ 116° and 1.8 @ 42° with a
+        2 g trial mass, published correction 2.03 g at -31°.  The mean
+        vectors of ten parts of each simulated record give the correction
+        to 5 % (the tolerance of the existing tests of this example).
+        """
+        from pyPRB import MassVector, StaticBalancing
+        trigger = make_trigger(self.F0, self.SR, self.DUR)
+        run_0 = make_vibration(self.F0, 3.4, 116.0, self.SR, self.DUR,
+                               noise_level=0.3, seed=1)
+        run_1 = make_vibration(self.F0, 1.8, 42.0, self.SR, self.DUR,
+                               noise_level=0.3, seed=2)
+        extractor = self._extractor()
+        V_0 = extractor.get_vector_scatter(run_0, trigger)
+        V_1 = extractor.get_vector_scatter(run_1, trigger)
+        assert len(V_0.vectors) == 10
+        assert 0 < V_0.relative_deviation < 0.05
+        comp = StaticBalancing(V_0.mean, V_1.mean,
+                               MassVector(2.0, 0.0)).compute_compensation(
+            repr=False)
+        assert np.isclose(comp.amplitude, 2.03, atol=0, rtol=0.05)
+        assert np.isclose(comp.phase, -31.0, atol=0, rtol=0.05)
+
+    def test_known_scatter(self):
+        """Known unsteadiness -> known cloud.
+
+        The amplitude grows linearly from 1 to 2 over the record and the
+        phase stays at 40°: four parts have the mean amplitudes 1.125,
+        1.375, 1.625 and 1.875.
+        """
+        t = np.arange(0, self.DUR, 1 / self.SR)
+        trigger = make_trigger(self.F0, self.SR, self.DUR)
+        amplitude = 1.0 + t / self.DUR
+        signal = amplitude * np.cos(2 * np.pi * self.F0 * t + np.deg2rad(40))
+        scatter = self._extractor().get_vector_scatter(signal, trigger,
+                                                       n_parts=4)
+        amplitudes = [v.amplitude for v in scatter.vectors]
+        assert np.allclose(amplitudes, [1.125, 1.375, 1.625, 1.875],
+                           rtol=2e-3)
+        assert np.isclose(scatter.mean.amplitude, 1.5, rtol=2e-3)
+        assert np.isclose(scatter.mean.phase, 40.0, atol=0.3)
+        assert np.isclose(scatter.amplitude_spread, 0.75, rtol=5e-3)
+        assert np.isclose(scatter.max_deviation, 0.375, rtol=5e-3)
+        assert np.isclose(scatter.relative_deviation, 0.25, rtol=5e-3)
+        assert scatter.phase_spread < 0.5
+
+    def test_known_phase_drift(self):
+        """The phase drifts by 20° over the record at constant amplitude."""
+        t = np.arange(0, self.DUR, 1 / self.SR)
+        trigger = make_trigger(self.F0, self.SR, self.DUR)
+        phase = np.deg2rad(100.0 + 20.0 * t / self.DUR)
+        signal = 2.0 * np.cos(2 * np.pi * self.F0 * t + phase)
+        scatter = self._extractor().get_vector_scatter(signal, trigger,
+                                                       n_parts=4)
+        phases = [v.phase for v in scatter.vectors]
+        assert np.allclose(phases, [102.5, 107.5, 112.5, 117.5], atol=0.3)
+        assert np.isclose(scatter.phase_spread, 15.0, atol=0.3)
+        assert scatter.amplitude_spread < 0.01
+
+    def test_noise_scatter_shrinks_with_longer_parts(self):
+        trigger = make_trigger(self.F0, self.SR, self.DUR)
+        signal = make_vibration(self.F0, 2.0, 70.0, self.SR, self.DUR,
+                                noise_level=1.0, seed=3)
+        extractor = self._extractor()
+        many = extractor.get_vector_scatter(signal, trigger, n_parts=40)
+        few = extractor.get_vector_scatter(signal, trigger, n_parts=4)
+        assert many.max_deviation > few.max_deviation > 0
+        assert np.isclose(many.mean.amplitude, 2.0, rtol=0.02)
+
+    @pytest.mark.parametrize("method_cls", [IQDemodulation, LeastSquaresFit,
+                                            FFTExtraction])
+    def test_uses_the_chosen_method(self, method_cls):
+        trigger = make_trigger(self.F0, self.SR, self.DUR)
+        signal = make_vibration(self.F0, 2.0, 70.0, self.SR, self.DUR,
+                                noise_level=0.1)
+        scatter = self._extractor(method=method_cls()).get_vector_scatter(
+            signal, trigger, n_parts=5)
+        assert np.isclose(scatter.mean.amplitude, 2.0, rtol=0.02)
+        assert np.isclose(scatter.mean.phase, 70.0, atol=1.0)
+
+    def test_against_rotation(self):
+        """The cloud follows the angle convention of the extractor."""
+        trigger = make_trigger(self.F0, self.SR, self.DUR)
+        signal = make_vibration(self.F0, 2.0, 70.0, self.SR, self.DUR)
+        scatter = self._extractor(
+            angle_convention="against_rotation").get_vector_scatter(
+            signal, trigger, n_parts=4)
+        assert np.isclose(scatter.mean.phase, 290.0, atol=0.5)
+
+    def test_invalid(self):
+        trigger = make_trigger(self.F0, self.SR, 1.0)
+        signal = make_vibration(self.F0, 2.0, 70.0, self.SR, 1.0)
+        extractor = self._extractor()
+        with pytest.raises(ValueError, match="at least 2"):
+            extractor.get_vibration_vectors(signal, trigger, n_parts=1)
+        with pytest.raises(ValueError, match="same length"):
+            extractor.get_vibration_vectors(signal, trigger[:-5])
+        with pytest.raises(ValueError, match="at least two revolutions"):
+            extractor.get_vibration_vectors(signal, trigger, n_parts=20)
+
+
+class TestRotationFreqVariation:
+    """Speed found in the trigger record and its variation."""
+
+    def test_steady_speed(self):
+        from pyPRB import SpeedVariation, rotation_freq_variation
+        trigger = make_trigger(25.0, 10000.0, 4.0, phase_deg=30.0)
+        speed = rotation_freq_variation(trigger, 10000.0)
+        assert isinstance(speed, SpeedVariation)
+        assert np.isclose(speed.mean, 25.0, rtol=1e-4)
+        assert speed.n_revolutions == 99
+        assert len(speed.values) == 9
+        assert speed.relative_range < 1e-3
+        assert speed.minimum <= speed.mean <= speed.maximum
+
+    def test_agrees_with_detect_rotation_freq(self):
+        from pyPRB import rotation_freq_variation
+        trigger = make_trigger(33.3, 10000.0, 6.0)
+        f0 = detect_rotation_freq(trigger, 10000.0, max_freq=100.0,
+                                  nfft_mult=16)
+        speed = rotation_freq_variation(trigger, 10000.0)
+        assert np.isclose(speed.mean, f0, rtol=2e-3)
+        assert np.isclose(speed.mean, 33.3, rtol=1e-4)
+
+    def test_known_run_up(self):
+        """Speed rising linearly from 24 Hz to 26 Hz over 10 s."""
+        from pyPRB import rotation_freq_variation
+        sr, dur = 10000.0, 10.0
+        t = np.arange(0, dur, 1 / sr)
+        angle = 2 * np.pi * (24.0 * t + 0.5 * (2.0 / dur) * t ** 2)
+        trigger = np.sign(np.sin(angle))
+        speed = rotation_freq_variation(trigger, sr, revolutions_per_value=5)
+        assert np.isclose(speed.mean, 25.0, rtol=2e-3)
+        assert np.isclose(speed.minimum, 24.0, atol=0.06)
+        assert np.isclose(speed.maximum, 26.0, atol=0.06)
+        assert np.isclose(speed.relative_range, 0.08, atol=0.005)
+        assert np.all(np.diff(speed.values) > -0.02)       # rising
+        assert np.isclose(speed.std, 2.0 / np.sqrt(12), rtol=0.05)
+
+    def test_smooth_trigger_and_falling_edge(self):
+        from pyPRB import rotation_freq_variation
+        t = np.arange(0, 4.0, 1 / 2000.0)
+        trigger = 2.5 + np.cos(2 * np.pi * 12.5 * t)         # with an offset
+        for edge in ("rising", "falling"):
+            speed = rotation_freq_variation(trigger, 2000.0,
+                                            revolutions_per_value=1,
+                                            edge=edge)
+            assert np.isclose(speed.mean, 12.5, rtol=1e-5)
+            assert speed.relative_range < 1e-4
+
+    def test_invalid(self):
+        from pyPRB import rotation_freq_variation
+        trigger = make_trigger(25.0, 10000.0, 0.2)           # 5 revolutions
+        with pytest.raises(ValueError, match="whole revolutions"):
+            rotation_freq_variation(trigger, 10000.0)
+        with pytest.raises(ValueError, match="sample_rate must be positive"):
+            rotation_freq_variation(trigger, 0.0)
+        with pytest.raises(ValueError, match="'rising' or 'falling'"):
+            rotation_freq_variation(trigger, 10000.0, edge="both")
+        with pytest.raises(ValueError, match="positive integer"):
+            rotation_freq_variation(trigger, 10000.0,
+                                    revolutions_per_value=0)
+
+
+class TestHarmonicContent:
+    """Content at 1x, 2x, 3x and the overall level."""
+
+    F0, SR, DUR = 25.0, 10000.0, 4.0
+
+    def _signal(self, a1=3.0, a2=1.0, a3=0.5, noise=0.0, offset=0.0):
+        t = np.arange(0, self.DUR, 1 / self.SR)
+        x = (a1 * np.cos(2 * np.pi * self.F0 * t + 0.4)
+             + a2 * np.cos(2 * np.pi * 2 * self.F0 * t - 1.0)
+             + a3 * np.cos(2 * np.pi * 3 * self.F0 * t + 2.0) + offset)
+        if noise:
+            x = x + noise * np.random.default_rng(0).standard_normal(len(t))
+        return x
+
+    def test_known_harmonics(self):
+        from pyPRB import HarmonicContent
+        extractor = VibrationExtractor(self.SR, self.F0)
+        content = extractor.get_harmonic_content(self._signal(offset=7.0))
+        assert isinstance(content, HarmonicContent)
+        assert content.orders == (1, 2, 3)
+        assert np.allclose(content.amplitudes, [3.0, 1.0, 0.5], rtol=1e-9)
+        overall = np.sqrt((9.0 + 1.0 + 0.25) / 2)
+        assert np.isclose(content.overall_rms, overall, rtol=1e-9)
+        assert np.isclose(content.fraction_1x, 3.0 / np.sqrt(2) / overall)
+
+    def test_agrees_with_extracted_vector(self):
+        extractor = VibrationExtractor(self.SR, self.F0)
+        signal = self._signal(noise=0.2)
+        trigger = make_trigger(self.F0, self.SR, self.DUR)
+        vector = extractor.get_vibration_vector(signal, trigger)
+        content = extractor.get_harmonic_content(signal)
+        assert np.isclose(content.amplitudes[0], vector.amplitude, rtol=1e-6)
+
+    def test_noise_lowers_the_1x_fraction(self):
+        extractor = VibrationExtractor(self.SR, self.F0)
+        clean = extractor.get_harmonic_content(self._signal(a2=0, a3=0))
+        assert np.isclose(clean.fraction_1x, 1.0)
+        noisy = extractor.get_harmonic_content(
+            self._signal(a2=0, a3=0, noise=3.0))
+        expected = (3.0 / np.sqrt(2)) / np.sqrt(4.5 + 9.0)
+        assert np.isclose(noisy.fraction_1x, expected, rtol=0.03)
+
+    @pytest.mark.parametrize("orders", [(0.5, 1, 1.5), (1, 2.5), (0, 1), ()])
+    def test_non_integer_orders_raise(self, orders):
+        extractor = VibrationExtractor(self.SR, self.F0)
+        with pytest.raises(ValueError, match="orders must be positive integers"):
+            extractor.get_harmonic_content(self._signal(), orders=orders)
+
+    def test_integer_valued_floats_accepted(self):
+        extractor = VibrationExtractor(self.SR, self.F0)
+        content = extractor.get_harmonic_content(self._signal(),
+                                                 orders=(1.0, 2.0))
+        assert content.orders == (1, 2)
+
+    def test_other_orders(self):
+        extractor = VibrationExtractor(self.SR, self.F0)
+        content = extractor.get_harmonic_content(self._signal(),
+                                                 orders=(2, 4))
+        assert np.allclose(content.amplitudes, [1.0, 0.0], atol=1e-9)
+        assert np.isnan(content.fraction_1x)
+
+    def test_invalid(self):
+        extractor = VibrationExtractor(self.SR, self.F0)
+        with pytest.raises(ValueError, match="positive integers"):
+            extractor.get_harmonic_content(self._signal(), orders=(0, 1))
+        with pytest.raises(ValueError, match="half the sampling rate"):
+            extractor.get_harmonic_content(self._signal(), orders=(1, 300))
+        with pytest.raises(ValueError, match="shorter than one revolution"):
+            extractor.get_harmonic_content(np.zeros(100))

@@ -70,7 +70,7 @@ Perform docs check.
       $ git push origin name-of-your-bugfix-or-feature
 
   A pull request should preferably only have one commit upon the current
-  master HEAD, (via rebases and squash).
+  ``main`` HEAD (via rebases and squash).
 
 * Submit a pull request through the service website (e.g. Github, Gitlab).
 

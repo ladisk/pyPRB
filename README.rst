@@ -138,7 +138,8 @@ Multi-Plane Balancing Example
 
 The notebook ``examples/showcase.ipynb`` walks through all balancing methods:
 static, dynamic and multi-plane (exact and least squares), from vibration
-vectors and from time signals.
+vectors and from time signals, followed by the field balancing tools
+described below.
 
 ``MultiPlaneBalancing`` handles ``N`` correction planes and ``M >= N``
 measurement points. Run ``j`` adds a trial mass to plane ``j``;

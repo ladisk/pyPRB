@@ -419,9 +419,16 @@ def detect_rotation_freq(
 
     Examples
     --------
-    >>> f0 = detect_rotation_freq(trigger_signal, sample_rate=10000)
-    >>> f0 = detect_rotation_freq(trigger_signal, sample_rate=10000,
+    >>> import numpy as np
+    >>> from pyPRB import detect_rotation_freq
+    >>> t = np.arange(0, 4, 1 / 10000)
+    >>> trigger = np.sin(2 * np.pi * 25.0 * t)
+    >>> round(detect_rotation_freq(trigger, sample_rate=10000), 3)
+    25.0
+    >>> f0 = detect_rotation_freq(trigger, sample_rate=10000,
     ...                           method='fft', max_freq=50.0, nfft_mult=256)
+    >>> round(f0, 3)
+    25.0
     """
     if method not in ("edges", "fft"):
         raise ValueError(f"method must be 'edges' or 'fft', got '{method}'.")
@@ -684,9 +691,15 @@ class VibrationExtractor:
 
     Examples
     --------
-    >>> f0 = detect_rotation_freq(trigger_signal, sample_rate=10000)
+    >>> import numpy as np
+    >>> from pyPRB import VibrationExtractor, detect_rotation_freq
+    >>> t = np.arange(0, 4, 1 / 10000)
+    >>> trigger = np.sin(2 * np.pi * 25.0 * t)   # rising edge at t = 0
+    >>> signal = 3.4 * np.cos(2 * np.pi * 25.0 * t + np.deg2rad(116))
+    >>> f0 = detect_rotation_freq(trigger, sample_rate=10000)
     >>> extractor = VibrationExtractor(sample_rate=10000, rotation_freq=f0)
-    >>> V_0 = extractor.get_vibration_vector(vibration_signal, trigger_signal)
+    >>> extractor.get_vibration_vector(signal, trigger)
+    VibrationVector(amplitude=3.4, phase=116°)
     """
 
     def __init__(

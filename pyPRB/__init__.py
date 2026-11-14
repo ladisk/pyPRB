@@ -39,6 +39,9 @@ Static balancing:
 >>> trial_mass = MassVector(2.0, 0.0)
 >>> balancer = StaticBalancing(V_0, V_1, trial_mass=trial_mass)
 >>> comp_mass = balancer.compute_compensation()
+Compensation mass: 2.01 g at position -30.8° on the rotor.
+>>> comp_mass
+MassVector(amplitude=2.01168, phase=-30.7888°, units='g')
 
 Dynamic balancing:
 
@@ -55,7 +58,11 @@ Dynamic balancing:
 ...                             V_1_2, V_2_2,
 ...                             trial_mass_1=trial_mass_1,
 ...                             trial_mass_2=trial_mass_2)
->>> comp_mass_1, comp_mass_2 = balancer.compute_compensation()
+>>> comp_mass_1, comp_mass_2 = balancer.compute_compensation(repr=False)
+>>> comp_mass_1
+MassVector(amplitude=2.95138, phase=50.1889°, units='g')
+>>> comp_mass_2
+MassVector(amplitude=2.84414, phase=-81.8841°, units='g')
 """
 
 from .core import (VibrationVector, MassVector, StaticBalancing,

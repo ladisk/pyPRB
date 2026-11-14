@@ -3,6 +3,8 @@ Rotor Balancing
 
 A Python package for static and dynamic rotor balancing calculations based on the methodology described in "Static and Dynamic Balancing using portable measuring equipment" by John Vaughan (Brüel & Kjær Application Note).
 
+Documentation: https://pyprb.readthedocs.io/en/latest/
+
 
 Features
 --------

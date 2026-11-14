@@ -51,7 +51,7 @@ dev = [
 
 [project.urls]
 homepage = "https://github.com/ladisk/pyPRB"
-documentation = "https://github.com/ladisk/pyPRB"
+documentation = "https://pyprb.readthedocs.io/en/latest/"
 source = "https://github.com/ladisk/pyPRB"
 
 # Define the files that are included in the wheel

@@ -53,6 +53,7 @@ Changed behaviour
 Other
 ~~~~~
 
+* Python 3.9 is no longer supported; pyPRB requires Python 3.10 or newer.
 * Showcase notebook ``examples/showcase.ipynb`` and example scripts for every
   feature.
 * Continuous integration (tests, docstring examples, example scripts and the

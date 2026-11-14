@@ -12,7 +12,7 @@ license-files = ["License"]
 description = "Static and dynamic rotor balancing using portable measurement equipment calculations based on Brüel & Kjær guide."
 readme = "README.rst"
 keywords = ["rotor", "balancing", "vibration", "dynamics", "mechanical-engineering"]
-requires-python = ">=3.9"
+requires-python = ">=3.10"
 
 # Dependency management (these must be installed for the package to work)
 dependencies = [
@@ -25,7 +25,6 @@ classifiers = [
     "Intended Audience :: Science/Research",
     "Topic :: Scientific/Engineering",
     "Programming Language :: Python :: 3",
-    "Programming Language :: Python :: 3.9",
     "Programming Language :: Python :: 3.10",
     "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",

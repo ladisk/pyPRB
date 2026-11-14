@@ -546,7 +546,8 @@ def rotation_freq_variation(
     """Measure the rotation frequency and its variation over a record.
 
     The times of the once-per-revolution trigger edges are located (with
-    linear interpolation between samples) and the rotation frequency is
+    hysteresis and linear interpolation between samples, as for the
+    phase reference of the extraction methods) and the rotation frequency is
     computed for consecutive blocks of revolutions.  A balancing reading
     is only meaningful if the speed is steady during the record and the
     same in all runs.
@@ -591,26 +592,22 @@ def rotation_freq_variation(
     """
     if sample_rate <= 0:
         raise ValueError(f"sample_rate must be positive, got {sample_rate}.")
-    if edge not in ("rising", "falling"):
-        raise ValueError(f"edge must be 'rising' or 'falling', got {edge!r}.")
+    _check_edge(edge)
     if (not isinstance(revolutions_per_value, (int, np.integer))
             or revolutions_per_value < 1):
         raise ValueError(
             "revolutions_per_value must be a positive integer, got "
             f"{revolutions_per_value!r}.")
 
-    x = np.asarray(trigger, dtype=float)
-    if edge == "falling":
-        x = -x
-    threshold = 0.5 * (np.min(x) + np.max(x))
-    above = x > threshold
-    idx = np.where(~above[:-1] & above[1:])[0]
-    if len(idx) < revolutions_per_value + 1:
+    try:
+        edges = _find_trigger_edges(trigger, edge)
+    except ValueError:
+        edges = np.empty(0)
+    if len(edges) < revolutions_per_value + 1:
         raise ValueError(
-            f"Found {max(len(idx) - 1, 0)} whole revolutions in the trigger "
+            f"Found {max(len(edges) - 1, 0)} whole revolutions in the trigger "
             f"signal; at least {revolutions_per_value} are needed.")
-    fraction = (threshold - x[idx]) / (x[idx + 1] - x[idx])
-    times = (idx + fraction) / sample_rate
+    times = edges / sample_rate
 
     block_times = times[::revolutions_per_value]
     values = revolutions_per_value / np.diff(block_times)
@@ -829,7 +826,7 @@ class VibrationExtractor:
         >>> import numpy as np
         >>> from pyPRB import VibrationExtractor
         >>> t = np.arange(0, 4, 1 / 10000)
-        >>> trigger = np.cos(2 * np.pi * 25.0 * t)   # once-per-revolution
+        >>> trigger = np.sin(2 * np.pi * 25.0 * t)   # rising edge at t = 0
         >>> signal = 3.4 * np.cos(2 * np.pi * 25.0 * t + np.deg2rad(116))
         >>> extractor = VibrationExtractor(sample_rate=10000, rotation_freq=25.0)
         >>> scatter = extractor.get_vector_scatter(signal, trigger, n_parts=8)

@@ -1,8 +1,7 @@
 """FFT-based vibration extraction method.
 
-Extracts the vibration component at the rotation frequency by computing
-the FFT of both the response and trigger signals, then deriving
-relative phase by subtracting the trigger phase from the signal phase.
+Extracts the vibration component at the rotation frequency from the FFT
+of the response signal; the phase is measured from the trigger edge.
 """
 
 from __future__ import annotations

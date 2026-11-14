@@ -11,6 +11,8 @@ Features
 * **MassVector**: Represents a mass placed at an angular position on a rotor
 * **StaticBalancing**: Single-plane balancing for rotors
 * **DynamicBalancing**: Two-plane balancing for rotors
+* **MultiPlaneBalancing**: Balancing in any number of correction planes,
+  with least-squares solution when there are more measurement points than planes
 * **VibrationExtractor**: Extracts vibration vectors from time-domain signals
 * **detect_rotation_freq**: Detects rotation frequency from a trigger signal
 * Four pluggable extraction methods: **IQDemodulation** (default),
@@ -110,6 +112,44 @@ Dynamic Balancing Example
     # +---------+---------------------+------------+
     # |    2    |       2.84 g        |   -81.9°   |
     # +---------+---------------------+------------+
+
+
+Multi-Plane Balancing Example
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+The notebook ``examples/showcase.ipynb`` walks through all balancing methods:
+static, dynamic and multi-plane (exact and least squares), from vibration
+vectors and from time signals.
+
+``MultiPlaneBalancing`` handles ``N`` correction planes and ``M >= N``
+measurement points. Run ``j`` adds a trial mass to plane ``j``;
+``V_trial[j][i]`` is the vibration at point ``i`` in that run.
+For ``M > N`` the least-squares solution is returned.
+
+.. code-block:: python
+
+    from pyPRB import VibrationVector, MassVector, MultiPlaneBalancing
+
+    # Initial run: one vector per measurement point
+    V_0 = [VibrationVector(5.1, 40), VibrationVector(7.3, 115),
+           VibrationVector(4.2, 260)]
+
+    # One trial run per correction plane, each with all measurement points
+    V_trial = [
+        [VibrationVector(3.0, 75), VibrationVector(6.8, 128),
+         VibrationVector(4.5, 250)],  # trial mass in plane 1
+        [VibrationVector(5.6, 22), VibrationVector(4.1, 150),
+         VibrationVector(3.9, 242)],  # trial mass in plane 2
+        [VibrationVector(5.0, 48), VibrationVector(7.9, 104),
+         VibrationVector(2.2, 300)],  # trial mass in plane 3
+    ]
+    trial_masses = [MassVector(2.0, 0.0), MassVector(2.0, 0.0),
+                    MassVector(2.0, 0.0)]
+
+    balancer = MultiPlaneBalancing(V_0, V_trial, trial_masses)
+    print(balancer)
+    compensation = balancer.compute_compensation()  # list of MassVector
+    residual = balancer.residual_vibration()        # predicted vibration
 
 
 Extracting Vibration Vectors from Measurements

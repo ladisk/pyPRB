@@ -45,6 +45,7 @@ from typing import NamedTuple
 
 import numpy as np
 
+from ._validation import _positive
 from .core import MassVector
 
 #: Standard series of balance quality grades in mm/s (steps of a factor 2.5).
@@ -52,12 +53,6 @@ BALANCE_QUALITY_GRADES = (0.4, 1.0, 2.5, 6.3, 16.0, 40.0, 100.0, 250.0,
                           630.0, 1600.0, 4000.0)
 
 _FACTOR = 30000.0 / np.pi   # 9549.3: mm/s and r/min to g·mm/kg
-
-
-def _positive(**values) -> None:
-    for name, value in values.items():
-        if not value > 0:
-            raise ValueError(f"{name} must be positive, got {value!r}.")
 
 
 def permissible_specific_unbalance(grade: float, speed: float) -> float:
@@ -177,8 +172,11 @@ def allocate_tolerance(permissible: float, distance_1: float,
         Distance from the centre of mass to plane 2 (same unit).
     limits : tuple of float or None, optional
         Smallest and largest share of one plane, by default
-        ``(0.3, 0.7)``; each share is limited to this range.  ``None``
-        applies no limits.
+        ``(0.3, 0.7)``; each share is limited to this range, and the two
+        shares always add up to 1 (the limit of one plane also bounds the
+        other: with ``(0.2, 0.9)`` a share lies between 0.2 and 0.8).
+        Requires ``0 <= low <= 0.5 <= high <= 1``.  ``None`` applies no
+        limits.
 
     Returns
     -------
@@ -224,11 +222,14 @@ def allocate_tolerance(permissible: float, distance_1: float,
     share_2 = distance_1 / total
     if limits is not None:
         low, high = limits
-        if not 0 <= low <= high:
+        if not 0 <= low <= 0.5 <= high <= 1:
             raise ValueError(
-                f"limits must satisfy 0 <= low <= high, got {limits!r}.")
-        share_1 = min(max(share_1, low), high)
-        share_2 = min(max(share_2, low), high)
+                "limits must satisfy 0 <= low <= 0.5 <= high <= 1, "
+                f"got {limits!r}.")
+        lower = max(low, 1.0 - high)
+        upper = min(high, 1.0 - low)
+        share_1 = min(max(share_1, lower), upper)
+        share_2 = 1.0 - share_1
     return float(permissible * share_1), float(permissible * share_2)
 
 

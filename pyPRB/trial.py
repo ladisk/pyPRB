@@ -16,15 +16,10 @@ from typing import NamedTuple
 
 import numpy as np
 
+from ._validation import _positive
 from .core import VibrationVector
 
 _GRAVITY = 9.80665   # standard acceleration of gravity, m/s^2
-
-
-def _positive(**values) -> None:
-    for name, value in values.items():
-        if not value > 0:
-            raise ValueError(f"{name} must be positive, got {value!r}.")
 
 
 def centrifugal_force(unbalance: float, speed: float) -> float:

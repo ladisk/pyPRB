@@ -19,10 +19,8 @@ from typing import NamedTuple
 
 import numpy as np
 
-from .core import MassVector, _as_complex, _mass_from_complex
-
-# Relative size below which a part of a split counts as zero.
-_REL_TOL = 1e-12
+# _REL_TOL: relative size below which a mass counts as zero (shared with core).
+from .core import _REL_TOL, MassVector, _as_complex, _mass_from_complex
 
 
 def _as_list(masses) -> list:

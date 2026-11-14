@@ -1327,6 +1327,18 @@ class TestHarmonicContent:
         expected = (3.0 / np.sqrt(2)) / np.sqrt(4.5 + 9.0)
         assert np.isclose(noisy.fraction_1x, expected, rtol=0.03)
 
+    @pytest.mark.parametrize("orders", [(0.5, 1, 1.5), (1, 2.5), (0, 1), ()])
+    def test_non_integer_orders_raise(self, orders):
+        extractor = VibrationExtractor(self.SR, self.F0)
+        with pytest.raises(ValueError, match="orders must be positive integers"):
+            extractor.get_harmonic_content(self._signal(), orders=orders)
+
+    def test_integer_valued_floats_accepted(self):
+        extractor = VibrationExtractor(self.SR, self.F0)
+        content = extractor.get_harmonic_content(self._signal(),
+                                                 orders=(1.0, 2.0))
+        assert content.orders == (1, 2)
+
     def test_other_orders(self):
         extractor = VibrationExtractor(self.SR, self.F0)
         content = extractor.get_harmonic_content(self._signal(),

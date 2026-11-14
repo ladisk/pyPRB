@@ -1095,3 +1095,80 @@ class TestAngleConvention:
         c = InfluenceCoefficients.from_trial_runs(
             V, VibrationVector(2, 40), m, angle_convention=AGAINST)
         assert c.angle_convention == AGAINST
+
+
+class TestReviewFindings:
+    """Regression tests for issues found in the review of PR #9."""
+
+    @staticmethod
+    def _ill_conditioned_runs():
+        alpha = np.array([[1.0, 1.001], [0.5j, 0.4995j]])
+        trial_masses = [MassVector(1.0, 0.0), MassVector(1.0, 0.0)]
+        return _simulate_runs(alpha, np.array([1.0, 0.5j]), trial_masses) + (
+            trial_masses,)
+
+    def test_none_inside_plane_list(self):
+        """None in the list of one plane means 'nothing' there."""
+        c = InfluenceCoefficients(np.array([[1.0, 0.2], [0.3j, 1.0]]))
+        V = [VibrationVector(1, 0), VibrationVector(1, 90)]
+        a = c.predict_vibration(V, [[MassVector(1, 0), None], None])
+        b = c.predict_vibration(V, [MassVector(1, 0), None])
+        assert np.allclose([v.complex_num for v in a],
+                           [v.complex_num for v in b])
+
+    def test_warnings_point_to_the_caller(self):
+        """IllConditionedWarning is attributed to the user's call."""
+        V_0, V_trial, trial_masses = self._ill_conditioned_runs()
+        c = InfluenceCoefficients.from_trial_runs(V_0, V_trial, trial_masses)
+        for call in (lambda: c.compute_compensation(V_0),
+                     lambda: c.residual_unbalance(V_0),
+                     lambda: c.check_conditioning()):
+            with pytest.warns(IllConditionedWarning) as rec:
+                call()
+            assert rec[0].filename == __file__
+
+    def test_one_plane_flat_trial_runs(self):
+        """One point and one plane: V_trial may be a flat list."""
+        V_0, V_1 = VibrationVector(3.4, 116), VibrationVector(1.8, 42)
+        trial = MassVector(2.0, 0.0)
+        a = InfluenceCoefficients.from_trial_runs(V_0, [V_1], trial)
+        b = InfluenceCoefficients.from_trial_runs(V_0, V_1, trial)
+        assert np.allclose(a.matrix, b.matrix)
+
+    def test_one_solver_for_both_classes(self):
+        """MultiPlaneBalancing and its coefficients warn alike."""
+        V_0, V_trial, trial_masses = self._ill_conditioned_runs()
+        balancer = MultiPlaneBalancing(V_0, V_trial, trial_masses)
+        with pytest.warns(IllConditionedWarning):
+            W_1 = balancer.compute_compensation(repr=False)
+        with pytest.warns(IllConditionedWarning):
+            W_2 = balancer.get_influence_coefficients().compute_compensation(V_0)
+        assert np.allclose([_as_complex(m) for m in W_1],
+                           [_as_complex(m) for m in W_2])
+        # the limit of the balancer is passed on
+        quiet = MultiPlaneBalancing(V_0, V_trial, trial_masses,
+                                    max_condition_number=None)
+        assert quiet.get_influence_coefficients().max_condition_number is None
+        with warnings.catch_warnings():
+            warnings.simplefilter("error")
+            quiet.get_influence_coefficients().compute_compensation(V_0)
+
+    def test_round_off_gives_none(self):
+        """A trial mass that already is the correction leaves nothing to add."""
+        alpha = np.array([[1.0 + 0.3j, 0.2], [0.1j, 0.9 - 0.2j]])
+        unbalance = np.array([0.7 * np.exp(1.1j), 1.3 * np.exp(-0.4j)])
+        # Trial masses equal to the ideal correction -unbalance
+        trial_masses = [MassVector(abs(w), np.rad2deg(np.angle(w)))
+                        for w in -unbalance]
+        T = np.array([_as_complex(tm) for tm in trial_masses])
+        V_0_c = alpha @ unbalance
+        V_0 = [VibrationVector.from_complex(z) for z in V_0_c]
+        V_trial, on = [], np.zeros(2, dtype=complex)
+        for j in range(2):
+            on[j] = T[j]
+            V_trial.append([VibrationVector.from_complex(z)
+                            for z in V_0_c + alpha @ on])
+        add = MultiPlaneBalancing(V_0, V_trial, trial_masses,
+                                  trial_left_on=True).compute_compensation(
+            repr=False, keep_trial_masses=True)
+        assert add == [None, None]

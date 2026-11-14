@@ -134,6 +134,26 @@ class TestAllocateTolerance:
             allocate_tolerance(0.0, 1, 1)
         with pytest.raises(ValueError, match="limits must satisfy"):
             allocate_tolerance(100.0, 1, 1, limits=(0.8, 0.2))
+        with pytest.raises(ValueError, match="limits must satisfy"):
+            allocate_tolerance(100.0, 1, 1, limits=(0.6, 0.8))
+        with pytest.raises(ValueError, match="limits must satisfy"):
+            allocate_tolerance(100.0, 1, 1, limits=(0.2, 1.2))
+
+    @pytest.mark.parametrize("limits", [(0.2, 0.9), (0.1, 0.6), (0.0, 1.0),
+                                        (0.5, 0.5), (1 / 3, 2 / 3)])
+    @pytest.mark.parametrize("d_1", [0.1, 1.0, 5.0, 9.0, 9.9])
+    def test_asymmetric_limits_keep_the_total(self, limits, d_1):
+        """The shares never add up to more than the permissible value.
+
+        Limits that are not symmetric around 0.5 used to be applied to
+        each plane separately: (0.2, 0.9) with distances 1 and 19 gave
+        90 + 20 = 110 % of the permissible unbalance.
+        """
+        U_1, U_2 = allocate_tolerance(100.0, d_1, 10.0 - d_1, limits=limits)
+        assert np.isclose(U_1 + U_2, 100.0)
+        low, high = limits
+        for U in (U_1, U_2):
+            assert low * 100 - 1e-9 <= U <= high * 100 + 1e-9
 
 
 class TestCheckResidual:

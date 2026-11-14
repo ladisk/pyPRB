@@ -654,9 +654,12 @@ class VibrationExtractor:
         >>> round(content.fraction_1x, 3)
         0.949
         """
+        orders = tuple(orders)
+        if len(orders) == 0 or any(
+                not float(k).is_integer() or k < 1 for k in orders):
+            raise ValueError(
+                f"orders must be positive integers, got {orders!r}.")
         orders = tuple(int(k) for k in orders)
-        if len(orders) == 0 or min(orders) < 1:
-            raise ValueError("orders must be positive integers.")
         if max(orders) * self.rotation_freq >= self.sample_rate / 2:
             raise ValueError(
                 f"Order {max(orders)} is above half the sampling rate.")

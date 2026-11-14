@@ -139,12 +139,81 @@ def _as_complex(vector) -> complex:
     return vector.amplitude * np.exp(1j * np.deg2rad(vector.phase))
 
 
-def _mass_from_complex(z: complex, units: str):
-    """Return a complex mass as a MassVector, or ``None`` for a zero mass."""
+_REL_TOL = 1e-12
+
+#: Default of ``get_influence_coefficients``: use the limit of the balancer.
+_INHERIT = object()
+
+
+def _mass_from_complex(z: complex, units: str, scale: float = 0.0):
+    """Return a complex mass as a MassVector, or ``None`` for a zero mass.
+
+    The mass counts as zero if its amplitude does not exceed
+    ``_REL_TOL * scale``, so that round-off in a calculation whose terms
+    have the size *scale* gives ``None`` rather than a tiny mass at a
+    random angle.
+    """
     amplitude = float(np.abs(z))
-    if amplitude == 0.0:
+    if amplitude <= _REL_TOL * scale:
         return None
     return MassVector(amplitude, float(np.rad2deg(np.angle(z))), units)
+
+
+def _masses_from_complex(W, units: str, scale: float = 0.0) -> list:
+    """Return complex masses as MassVector or ``None`` (see above).
+
+    The scale is at least the largest of the masses themselves.
+    """
+    W = np.asarray(W)
+    scale = max(scale, float(np.max(np.abs(W))) if W.size else 0.0)
+    return [_mass_from_complex(w, units, scale) for w in W]
+
+
+def _conditioning(matrix: np.ndarray) -> 'tuple[int, float]':
+    """Rank and condition number of *matrix* from one SVD."""
+    s = np.linalg.svd(matrix, compute_uv=False)
+    if s.size == 0 or s[0] == 0:
+        return 0, float("inf")
+    rank = int(np.sum(s > s[0] * max(matrix.shape) * np.finfo(float).eps))
+    cond = float(s[0] / s[-1]) if s[-1] > 0 else float("inf")
+    return rank, cond
+
+
+def _check_conditioning(rank: int, cond: float, n_planes: int,
+                        max_condition_number, stacklevel: int) -> None:
+    """Raise for a rank-deficient matrix, warn for an ill-conditioned one.
+
+    *stacklevel* is passed to :func:`warnings.warn` as seen from the
+    caller of this function, plus one.
+    """
+    if rank < n_planes:
+        raise ValueError(
+            "Influence coefficient matrix is rank deficient: the trial "
+            "runs do not distinguish all correction planes.")
+    if max_condition_number is not None and cond > max_condition_number:
+        warnings.warn(
+            f"Influence coefficient matrix is ill-conditioned (condition "
+            f"number {cond:.3g} > {max_condition_number:g}): small "
+            "errors in the readings give large errors in the masses.",
+            IllConditionedWarning, stacklevel=stacklevel + 1)
+
+
+def _solve_influence(matrix: np.ndarray, rhs: np.ndarray,
+                     max_condition_number) -> np.ndarray:
+    """Least-squares solution of ``matrix @ W = rhs``, shared by all classes.
+
+    Raises ``ValueError`` if the matrix is rank deficient and warns with
+    :class:`IllConditionedWarning` if it is ill-conditioned.  One SVD
+    (inside ``lstsq``) gives the solution, the rank and the condition
+    number.  The warning is attributed to the frame three levels up:
+    this function is called from a private ``_solve`` method, which is
+    called from the public method the user called.
+    """
+    W, _, rank, sv = np.linalg.lstsq(matrix, rhs, rcond=None)
+    cond = float(sv[0] / sv[-1]) if sv[-1] > 0 else float("inf")
+    _check_conditioning(rank, cond, matrix.shape[1], max_condition_number,
+                        stacklevel=4)
+    return W
 
 
 class VibrationVector:
@@ -845,7 +914,7 @@ class MultiPlaneBalancing:
         """
         return float(np.linalg.cond(self.influence_coefficients))
 
-    def get_influence_coefficients(self, max_condition_number=100.0):
+    def get_influence_coefficients(self, max_condition_number=_INHERIT):
         """Return the influence coefficients as a reusable object.
 
         The returned :class:`InfluenceCoefficients` can be stored (see
@@ -855,7 +924,8 @@ class MultiPlaneBalancing:
         Parameters
         ----------
         max_condition_number : float or None, optional
-            Passed to :class:`InfluenceCoefficients`.
+            Passed to :class:`InfluenceCoefficients`.  By default the
+            limit of this balancer (``self.max_condition_number``).
 
         Returns
         -------
@@ -863,6 +933,8 @@ class MultiPlaneBalancing:
             Influence coefficients of this set of runs, in the units of
             the trial masses.
         """
+        if max_condition_number is _INHERIT:
+            max_condition_number = self.max_condition_number
         return InfluenceCoefficients(
             self.influence_coefficients,
             units=self.trial_masses[0].units,
@@ -877,22 +949,9 @@ class MultiPlaneBalancing:
         be called directly from a public method, so that the warning
         points to the user's call.
         """
-        alpha = self.influence_coefficients
         V_0 = np.array([v.complex_num for v in self.V_0])
-        W, _, rank, sv = np.linalg.lstsq(alpha, -V_0, rcond=None)
-        if rank < self.n_planes:
-            raise ValueError(
-                "Influence coefficient matrix is rank deficient: the trial "
-                "runs do not distinguish all correction planes.")
-        cond = sv[0] / sv[-1]
-        if (self.max_condition_number is not None
-                and cond > self.max_condition_number):
-            warnings.warn(
-                f"Influence coefficient matrix is ill-conditioned (condition "
-                f"number {cond:.3g} > {self.max_condition_number:g}): small "
-                "errors in the readings give large errors in the masses.",
-                IllConditionedWarning, stacklevel=3)
-        return W
+        return _solve_influence(self.influence_coefficients, -V_0,
+                                self.max_condition_number)
 
     def compute_compensation(self, repr: bool = True,
                              keep_trial_masses: bool = False) -> list:
@@ -936,7 +995,8 @@ class MultiPlaneBalancing:
                     "keep_trial_masses=True requires trial_left_on=True: the "
                     "trial masses were removed between the runs.")
             T = np.array([_as_complex(tm) for tm in self.trial_masses])
-            result = [_mass_from_complex(w, units) for w in W - T]
+            scale = max(float(np.max(np.abs(W))), float(np.max(np.abs(T))))
+            result = _masses_from_complex(W - T, units, scale)
         else:
             result = [MassVector(np.abs(w), np.rad2deg(np.angle(w)), units)
                       for w in W]
@@ -1172,12 +1232,18 @@ class InfluenceCoefficients:
         """
         if isinstance(V_0, VibrationVector):
             V_0 = [V_0]
+            # One measurement point: V_trial may list one vector per plane.
+            if isinstance(V_trial, VibrationVector):
+                V_trial = [V_trial]
+            V_trial = [[run] if isinstance(run, VibrationVector) else run
+                       for run in V_trial]
         if isinstance(trial_masses, MassVector):
             trial_masses = [trial_masses]
         if isinstance(V_trial, VibrationVector):
             V_trial = [[V_trial]]
         balancer = MultiPlaneBalancing(V_0, V_trial, trial_masses,
                                        trial_left_on=trial_left_on,
+                                       max_condition_number=max_condition_number,
                                        angle_convention=angle_convention)
         return balancer.get_influence_coefficients(
             max_condition_number=max_condition_number)
@@ -1287,10 +1353,7 @@ class InfluenceCoefficients:
         nearly the same effect on all points.  The value depends on the
         scaling of the rows and columns (different sensors or radii).
         """
-        s = np.linalg.svd(self.matrix, compute_uv=False)
-        if s[-1] == 0:
-            return float("inf")
-        return float(s[0] / s[-1])
+        return _conditioning(self.matrix)[1]
 
     def check_conditioning(self) -> float:
         """Check that the correction planes can be told apart.
@@ -1311,18 +1374,9 @@ class InfluenceCoefficients:
         IllConditionedWarning
             If the condition number exceeds ``max_condition_number``.
         """
-        if np.linalg.matrix_rank(self.matrix) < self.n_planes:
-            raise ValueError(
-                "Influence coefficient matrix is rank deficient: the trial "
-                "runs do not distinguish all correction planes.")
-        cond = self.condition_number
-        if (self.max_condition_number is not None
-                and cond > self.max_condition_number):
-            warnings.warn(
-                f"Influence coefficient matrix is ill-conditioned (condition "
-                f"number {cond:.3g} > {self.max_condition_number:g}): small "
-                "errors in the readings give large errors in the masses.",
-                IllConditionedWarning, stacklevel=3)
+        rank, cond = _conditioning(self.matrix)
+        _check_conditioning(rank, cond, self.n_planes,
+                            self.max_condition_number, stacklevel=2)
         return cond
 
     # -- use -----------------------------------------------------------------
@@ -1354,6 +1408,8 @@ class InfluenceCoefficients:
             if isinstance(plane, MassVector):
                 plane = [plane]
             for m in plane:
+                if m is None:
+                    continue
                 if m.units != self.units:
                     raise ValueError(
                         f"Mass units must match the coefficients: got "
@@ -1363,9 +1419,8 @@ class InfluenceCoefficients:
         return W
 
     def _solve(self, rhs: np.ndarray) -> np.ndarray:
-        self.check_conditioning()
-        W, _, _, _ = np.linalg.lstsq(self.matrix, rhs, rcond=None)
-        return W
+        """Solve ``matrix @ W = rhs``; call only from a public method."""
+        return _solve_influence(self.matrix, rhs, self.max_condition_number)
 
     def compute_compensation(self, V) -> list:
         """Calculate the masses to add from one reading.
@@ -1397,7 +1452,7 @@ class InfluenceCoefficients:
         MassVector(amplitude=0.461538, phase=-2.61986°, units='g')
         """
         W = self._solve(-self._readings(V))
-        return [_mass_from_complex(w, self.units) for w in W]
+        return _masses_from_complex(W, self.units)
 
     def predict_vibration(self, V, masses) -> list:
         """Predict the vibration after fitting a given set of masses.
@@ -1452,4 +1507,4 @@ class InfluenceCoefficients:
         MassVector(amplitude=0.461538, phase=177.38°, units='g')
         """
         W = self._solve(self._readings(V))
-        return [_mass_from_complex(w, self.units) for w in W]
+        return _masses_from_complex(W, self.units)

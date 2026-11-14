@@ -10,7 +10,8 @@ from __future__ import annotations
 
 import numpy as np
 
-from ._vibration_extractor import _import_matplotlib
+from ._vibration_extractor import (_check_edge, _edge_reference,
+                                   _import_matplotlib)
 
 
 class LeastSquaresFit:
@@ -23,9 +24,11 @@ class LeastSquaresFit:
     there is no spectral leakage even when the measurement window does
     not span an exact number of revolutions.
 
-    The relative phase is obtained by performing the same fit on the
-    trigger signal and subtracting the trigger phase from the signal
-    phase.
+    The phase is measured from the trigger edge (the datum mark passing
+    the probe): the edges are located with sub-sample resolution, the
+    same fit is applied to a unit cosine with zero phase at the edges,
+    and its phase is subtracted from the signal phase.  The result
+    therefore does not depend on the pulse width of the trigger.
 
     Parameters
     ----------
@@ -33,6 +36,9 @@ class LeastSquaresFit:
         If ``True`` (default), include a constant (DC) term in the
         model: ``A·cos(ωt) + B·sin(ωt) + C``.  This prevents a DC
         offset in the signal from biasing the amplitude estimate.
+    edge : str
+        Trigger edge used as the phase reference: ``'rising'`` (default)
+        or ``'falling'``.
     plotting : bool
         If ``True``, show a diagnostic figure during each call to
         :meth:`extract`.  Requires matplotlib
@@ -47,10 +53,10 @@ class LeastSquaresFit:
         Sine coefficient of the signal fit from the last call to
         :meth:`extract`.
     A_trigger_ : float or None
-        Cosine coefficient of the trigger fit from the last call to
+        Cosine coefficient of the edge-reference fit from the last call to
         :meth:`extract`.
     B_trigger_ : float or None
-        Sine coefficient of the trigger fit from the last call to
+        Sine coefficient of the edge-reference fit from the last call to
         :meth:`extract`.
     dc_signal_ : float or None
         Fitted DC offset of the signal (``None`` if *fit_dc* is
@@ -70,9 +76,12 @@ class LeastSquaresFit:
     def __init__(
         self,
         fit_dc: bool = True,
+        edge: str = "rising",
         plotting: bool = False,
     ):
+        _check_edge(edge)
         self.fit_dc = fit_dc
+        self.edge = edge
         self.plotting = plotting
 
         # Diagnostic attributes (None until extract() is called)
@@ -110,7 +119,7 @@ class LeastSquaresFit:
             Peak amplitude at the rotation frequency.
         phase_deg : float
             Phase at the rotation frequency in degrees, relative to
-            the trigger signal.
+            the trigger edge.
         """
         n = len(signal)
         t = np.arange(n) / sample_rate
@@ -135,8 +144,10 @@ class LeastSquaresFit:
         amplitude = float(np.sqrt(A_sig**2 + B_sig**2))
         sig_phase = np.arctan2(-B_sig, A_sig)
 
-        # Fit trigger
-        coeffs_trig, _, _, _ = np.linalg.lstsq(X, trigger, rcond=None)
+        # Fit the edge reference
+        reference = _edge_reference(trigger, sample_rate, rotation_freq,
+                                    self.edge)
+        coeffs_trig, _, _, _ = np.linalg.lstsq(X, reference, rcond=None)
         A_trig = float(coeffs_trig[0])
         B_trig = float(coeffs_trig[1])
         trig_phase = np.arctan2(-B_trig, A_trig)

@@ -43,7 +43,10 @@ class ExtractionMethod(Protocol):
         amplitude : float
             Peak amplitude of the fundamental (1×) component.
         phase_deg : float
-            Phase of the fundamental component in degrees.
+            Phase of the fundamental component in degrees, relative to
+            the trigger edge: a response ``A·cos(θ + φ)``, where ``θ`` is
+            the rotation angle measured from the trigger edge, gives
+            ``φ``.
         """
         ...
 
@@ -117,6 +120,146 @@ def _rfft(
     H = np.fft.rfft(signal, n=N) * 2 / N * nfft_mult / coherent_gain
     freq = np.fft.rfftfreq(N, d=1 / sample_rate)
     return freq, H
+
+
+_EDGES = ("rising", "falling")
+
+
+def _check_edge(edge: str) -> None:
+    """Raise ValueError if *edge* is not a valid trigger edge."""
+    if edge not in _EDGES:
+        raise ValueError(f"edge must be 'rising' or 'falling', got '{edge}'.")
+
+
+def _find_trigger_edges(
+    trigger: np.ndarray,
+    edge: str = "rising",
+    min_spacing: float | None = None,
+) -> np.ndarray:
+    """Locate trigger edges with sub-sample resolution.
+
+    The threshold is the midpoint between the minimum and the maximum of
+    the trigger, so the result does not depend on the pulse width or on
+    the signal levels.  The position of each edge is linearly
+    interpolated between the two samples on either side of the
+    threshold.  An edge is only accepted when the trigger moves all the
+    way from below 25 % to above 75 % of its range (or the reverse for a
+    falling edge); this hysteresis rejects extra crossings caused by
+    noise on a slow edge.  If noise makes the trigger cross the midpoint
+    several times within one edge, the mean of the first and the last
+    crossing is used.
+
+    Parameters
+    ----------
+    trigger : np.ndarray
+        Trigger signal (one pulse per revolution).
+    edge : str
+        ``'rising'`` (default) or ``'falling'``.
+    min_spacing : float, optional
+        Minimum distance between two edges in samples.  An edge closer
+        than this to the previously accepted edge is ignored, which
+        suppresses multiple crossings caused by noise on a slow edge.
+
+    Returns
+    -------
+    np.ndarray
+        Fractional sample positions of the edges.
+
+    Raises
+    ------
+    ValueError
+        If the trigger is constant or contains no edge of the given type.
+    """
+    _check_edge(edge)
+    trigger = np.asarray(trigger, dtype=float)
+    lo, hi = float(np.min(trigger)), float(np.max(trigger))
+    if not hi > lo:
+        raise ValueError("Trigger signal is constant; no edges found.")
+    threshold = 0.5 * (lo + hi)
+    if edge == "falling":
+        trigger = -trigger
+        threshold = -threshold
+        lo, hi = -hi, -lo
+    upper = lo + 0.75 * (hi - lo)
+    lower = lo + 0.25 * (hi - lo)
+
+    # Schmitt trigger: the state changes only when a band limit is passed.
+    is_high = trigger > upper
+    decided = is_high | (trigger < lower)
+    last = np.maximum.accumulate(np.where(decided, np.arange(len(trigger)), 0))
+    state = is_high[last] & decided[last]
+    switch_on = np.where(~state[:-1] & state[1:])[0] + 1   # first high sample
+
+    # Midpoint crossings (interpolated) inside each transition, i.e.
+    # between the last sample below the lower limit and the switch-on.
+    # With noise there can be several; the edge is the mean of the first
+    # and the last one.
+    above = trigger > threshold
+    idx = np.where(~above[:-1] & above[1:])[0]
+    x0 = trigger[idx]
+    x1 = trigger[idx + 1]
+    crossings = idx + (threshold - x0) / (x1 - x0)
+
+    last_low = np.maximum.accumulate(
+        np.where(trigger < lower, np.arange(len(trigger)), -1))
+    starts = last_low[switch_on]
+    valid = starts >= 0
+    first = np.searchsorted(idx, starts[valid])
+    last = np.searchsorted(idx, switch_on[valid]) - 1
+    ok = last >= first
+    if not np.any(ok):
+        raise ValueError(
+            f"No {edge} edges found in the trigger signal. "
+            "Check that the trigger channel contains a periodic pulse."
+        )
+    edges = 0.5 * (crossings[first[ok]] + crossings[last[ok]])
+
+    if min_spacing is not None and len(edges) > 1:
+        keep = [edges[0]]
+        for e in edges[1:]:
+            if e - keep[-1] >= min_spacing:
+                keep.append(e)
+        edges = np.array(keep)
+    return edges
+
+
+def _edge_reference(
+    trigger: np.ndarray,
+    sample_rate: float,
+    rotation_freq: float,
+    edge: str = "rising",
+) -> np.ndarray:
+    """Unit cosine at the rotation frequency with zero phase at the trigger edges.
+
+    The phase reference of all extraction methods is the trigger edge
+    (the datum mark passing the probe).  The reference phase is the
+    circular mean over all edges, which makes it robust to edge jitter.
+    Processing this reference in the same way as the response signal
+    and subtracting its phase gives the phase relative to the edge.
+
+    Parameters
+    ----------
+    trigger : np.ndarray
+        Trigger signal.
+    sample_rate : float
+        Sampling rate in Hz.
+    rotation_freq : float
+        Rotation frequency in Hz.
+    edge : str
+        ``'rising'`` (default) or ``'falling'``.
+
+    Returns
+    -------
+    np.ndarray
+        ``cos(ω (t - t_edge))`` with the same length as *trigger*.
+    """
+    samples_per_period = sample_rate / rotation_freq
+    edges = _find_trigger_edges(trigger, edge,
+                                min_spacing=0.5 * samples_per_period)
+    omega = 2 * np.pi / samples_per_period          # rad per sample
+    theta_0 = np.angle(np.mean(np.exp(1j * omega * edges)))
+    n = np.arange(len(trigger))
+    return np.cos(omega * n - theta_0)
 
 
 def _import_matplotlib():

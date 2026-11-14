@@ -152,6 +152,14 @@ Extracting Vibration Vectors from Measurements
     comp_mass = balancer.compute_compensation()
     # Output: Compensation mass: 2.01 g at position -30.8° on the rotor.
 
+**Phase reference.** All extraction methods measure the phase from the
+trigger edge (``edge="rising"`` by default, ``"falling"`` for an active-low
+probe): a response ``A·cos(θ + φ)``, where ``θ`` is the rotation angle
+counted from the edge, gives the vector ``A @ φ``. The edges are located with
+sub-sample resolution and hysteresis, so the phase does not depend on the
+pulse width or the signal levels of the trigger, and all four methods give
+the same phase.
+
 
 Balancing procedure
 -------------------

@@ -8,23 +8,26 @@ from __future__ import annotations
 
 import numpy as np
 
-from ._vibration_extractor import _rfft
+from ._vibration_extractor import _check_edge, _find_trigger_edges, _rfft
 
 
 class SynchronousAveraging:
     """Extracts the fundamental vibration component via synchronous averaging.
 
     The trigger signal (e.g. from a photoelectric probe) is used to
-    segment the response signal into individual revolutions.  These
-    segments are resampled to a common length and averaged, suppressing
-    noise that is not synchronous with the rotation.  The fundamental
-    component is then extracted from FFT bin 1 of the averaged waveform.
+    segment the response signal into individual revolutions.  The
+    trigger edges are located with sub-sample resolution and each
+    revolution is resampled from its edge to the next edge onto a common
+    number of points.  The segments are averaged, suppressing noise that
+    is not synchronous with the rotation, and the fundamental component
+    is extracted from FFT bin 1 of the averaged waveform.  The phase is
+    therefore measured from the trigger edge, as in the other methods.
 
     Parameters
     ----------
     edge : str
-        Trigger edge used to define revolution boundaries:
-        ``'rising'`` (default) or ``'falling'``.
+        Trigger edge used to define revolution boundaries and the phase
+        reference: ``'rising'`` (default) or ``'falling'``.
     period_tolerance : float
         Relative tolerance for rejecting segments whose length deviates
         from the expected rotation period.  Default is 0.1 (±10 %).
@@ -57,8 +60,7 @@ class SynchronousAveraging:
         period_tolerance: float = 0.1,
         plotting: bool = False,
     ):
-        if edge not in ("rising", "falling"):
-            raise ValueError(f"edge must be 'rising' or 'falling', got '{edge}'.")
+        _check_edge(edge)
         if not 0 < period_tolerance < 1:
             raise ValueError(
                 f"period_tolerance must be between 0 and 1, got {period_tolerance}."
@@ -94,7 +96,8 @@ class SynchronousAveraging:
         amplitude : float
             Peak amplitude of the fundamental component.
         phase_deg : float
-            Phase of the fundamental component in degrees.
+            Phase of the fundamental component in degrees, relative to
+            the trigger edge.
         """
         crossings = self._find_trigger_crossings(trigger)
 
@@ -119,7 +122,10 @@ class SynchronousAveraging:
         return amplitude, phase_deg
 
     def _find_trigger_crossings(self, trigger: np.ndarray) -> np.ndarray:
-        """Return sample indices where the trigger signal crosses its mean.
+        """Return the positions of the trigger edges.
+
+        The threshold is the midpoint between the trigger minimum and
+        maximum; the positions are interpolated between samples.
 
         Parameters
         ----------
@@ -129,29 +135,14 @@ class SynchronousAveraging:
         Returns
         -------
         np.ndarray
-            Integer sample indices of detected crossings.
+            Fractional sample positions of the detected edges.
 
         Raises
         ------
         ValueError
             If no crossings are found.
         """
-        threshold = np.mean(trigger)
-        trigger_bool = trigger > threshold
-        diff = np.diff(trigger_bool.astype(np.int8))
-
-        if self.edge == "rising":
-            crossings = np.where(diff > 0)[0]
-        else:
-            crossings = np.where(diff < 0)[0]
-
-        if len(crossings) == 0:
-            raise ValueError(
-                f"No {self.edge} crossings found in the trigger signal. "
-                "Check that the trigger channel contains a periodic pulse."
-            )
-
-        return crossings
+        return _find_trigger_edges(trigger, self.edge)
 
     def _synchronous_average(
         self,
@@ -162,7 +153,8 @@ class SynchronousAveraging:
         """Average one-revolution segments of *signal* locked to *crossings*.
 
         Each segment between consecutive trigger crossings is resampled to a
-        common length (median valid period) and then averaged.  Segments whose
+        common length (median valid period, rounded) and then averaged.
+        The first point of every segment lies exactly on the trigger edge.  Segments whose
         length deviates more than ``self.period_tolerance`` from
         *expected_period* are rejected.
 
@@ -171,7 +163,7 @@ class SynchronousAveraging:
         signal : np.ndarray
             Response signal.
         crossings : np.ndarray
-            Sample indices of trigger crossings.
+            Fractional sample positions of trigger crossings.
         expected_period : float
             Expected period in samples (``sample_rate / rotation_freq``).
 
@@ -204,20 +196,26 @@ class SynchronousAveraging:
         median_period = np.median(periods[valid_mask])
         target_samples = int(np.round(median_period))
 
+        samples = np.arange(len(signal))
+        fraction = np.arange(target_samples) / target_samples
         segments = []
         for i in range(len(crossings) - 1):
             if not valid_mask[i]:
                 continue
             start = crossings[i]
             end = crossings[i + 1]
-            if start < 0 or end > len(signal):
+            if start < 0 or end > len(signal) - 1:
                 continue
-            segment = signal[start:end]
-            x_old = np.linspace(0, 1, len(segment))
-            x_new = np.linspace(0, 1, target_samples)
-            resampled = np.interp(x_new, x_old, segment)
-            segments.append(resampled)
+            # One revolution from this edge (inclusive) to the next
+            # (exclusive), at fractional sample positions.
+            positions = start + (end - start) * fraction
+            segments.append(np.interp(positions, samples, signal))
 
+        if len(segments) < 2:
+            raise ValueError(
+                f"Only {len(segments)} complete segment(s) found inside the "
+                "signal. Provide a longer signal."
+            )
         averaged = np.mean(np.array(segments), axis=0)
         return averaged, segments
 
@@ -275,11 +273,14 @@ class SynchronousAveraging:
         mask = time <= t_end
 
         ax1.plot(time[mask], trigger[mask], color="steelblue", label="Trigger")
-        ax1.axhline(np.mean(trigger), color="gray", linestyle="--",
-                     linewidth=0.8, label="Threshold")
+        threshold = 0.5 * (np.min(trigger) + np.max(trigger))
+        ax1.axhline(threshold, color="gray", linestyle="--",
+                    linewidth=0.8, label="Threshold")
 
         crossings_in_window = crossings[crossings < np.sum(mask)]
-        ax1.scatter(time[crossings_in_window], trigger[crossings_in_window],
+        dt = time[1] - time[0] if len(time) > 1 else 0.0
+        ax1.scatter(crossings_in_window * dt,
+                    np.full(len(crossings_in_window), threshold),
                     color="red", zorder=5, s=30, label="Crossings")
         ax1.set_xlabel("Time (s)")
         ax1.set_ylabel("Amplitude")

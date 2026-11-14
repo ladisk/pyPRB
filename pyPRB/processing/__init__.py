@@ -13,6 +13,12 @@ The default extraction method is :class:`IQDemodulation`, which
 multiplies the signal by cosine/sine references at the rotation frequency
 and averages to extract the fundamental component.  Custom methods can be
 provided via the :class:`ExtractionMethod` protocol.
+
+All built-in methods measure the phase from the trigger edge (rising by
+default): a response ``A·cos(θ + φ)``, where ``θ`` is the rotation angle
+counted from the edge, gives the phase ``φ``.  The edges are located with
+sub-sample resolution and hysteresis, so the phase does not depend on the
+pulse width of the trigger.
 """
 
 from ._vibration_extractor import ExtractionMethod, VibrationExtractor, detect_rotation_freq

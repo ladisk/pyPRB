@@ -12,7 +12,11 @@ from pyPRB.processing import (
     ExtractionMethod,
     detect_rotation_freq,
 )
-from pyPRB.processing._vibration_extractor import _rfft
+from pyPRB.processing._vibration_extractor import (
+    _edge_reference,
+    _find_trigger_edges,
+    _rfft,
+)
 from pyPRB import VibrationVector
 
 
@@ -24,11 +28,35 @@ def make_trigger(f0: float, sample_rate: float, duration: float,
                  phase_deg: float = 0.0) -> np.ndarray:
     """Square wave trigger signal at frequency *f0*.
 
-    Uses ``cos`` so that the fundamental's frequency-domain phase
-    follows cosine convention.
+    The rising edge is where ``2·π·f0·t + phase_deg`` is a multiple of
+    360°, so a vibration ``cos(2·π·f0·t + φ)`` has the phase
+    ``φ - phase_deg`` relative to the rising edge.
     """
     t = np.arange(0, duration, 1 / sample_rate)
-    return np.sign(np.cos(2 * np.pi * f0 * t + np.deg2rad(phase_deg)))
+    return np.sign(np.sin(2 * np.pi * f0 * t + np.deg2rad(phase_deg)))
+
+
+def make_pulse_trigger(f0: float, sample_rate: float, duration: float,
+                       edge_time: float = 0.0, width: float = 0.1,
+                       rise_samples: float = 4.0,
+                       inverted: bool = False) -> np.ndarray:
+    """Once-per-revolution pulse with linear edges of finite rise time.
+
+    The rising edge crosses the midpoint (0.5) exactly at ``edge_time``
+    (plus whole revolutions); the pulse lasts *width* of a revolution.
+    With ``inverted=True`` the signal is ``1 - pulse`` (active low), so
+    the datum is then on the falling edge.
+    """
+    t = np.arange(0, duration, 1 / sample_rate)
+    period = sample_rate / f0
+    gap = 1.0 - width
+    # Revolutions since the rising edge, in [-gap/2, 1 - gap/2), so that
+    # the whole pulse and both of its edges lie inside one interval.
+    u = (((t - edge_time) * f0 + gap / 2) % 1.0) - gap / 2
+    rising = np.clip(0.5 + u * period / rise_samples, 0.0, 1.0)
+    falling = np.clip(0.5 - (u - width) * period / rise_samples, 0.0, 1.0)
+    pulse = np.minimum(rising, falling)
+    return 1.0 - pulse if inverted else pulse
 
 
 def make_vibration(
@@ -48,11 +76,6 @@ def make_vibration(
         rng = np.random.default_rng(seed)
         signal = signal + noise_level * rng.standard_normal(len(t))
     return signal
-
-
-# SA segments at trigger crossings.  The cosine-based make_trigger has its
-# rising crossing offset by -90 deg compared to a sine-based trigger.
-SA_CROSSING_OFFSET = -90.0
 
 
 # ===========================================================================
@@ -434,12 +457,12 @@ class TestLeastSquaresFit:
 class TestSynchronousAveraging:
     """Tests for synchronous averaging extraction."""
 
-    CROSSING_OFFSET = SA_CROSSING_OFFSET
-
     def test_rising_edge_positions(self):
         """Rising crossings should be spaced at the expected period."""
         f0, sr, dur = 10.0, 10000.0, 1.0
-        trigger = make_trigger(f0, sr, dur)
+        # Edges inside the record (an edge on the very first sample is not
+        # a complete transition and is not counted)
+        trigger = make_trigger(f0, sr, dur, phase_deg=-36.0)
         method = SynchronousAveraging(edge="rising")
         crossings = method._find_trigger_crossings(trigger)
         expected_period = sr / f0  # 1000 samples
@@ -462,31 +485,31 @@ class TestSynchronousAveraging:
         """Constant signal should raise ValueError."""
         trigger = np.ones(1000)
         method = SynchronousAveraging(edge="rising")
-        with pytest.raises(ValueError, match="No rising crossings"):
+        with pytest.raises(ValueError, match="constant"):
             method._find_trigger_crossings(trigger)
 
-    def test_crossing_offset(self):
-        """CROSSING_OFFSET makes cosine trigger produce same crossings as sine trigger."""
-        f0 = 25.0
-        sr = 10000.0
-        dur = 1.0
-
-        t = np.arange(0, dur, 1 / sr)
-        sin_trigger = np.sign(np.sin(2 * np.pi * f0 * t))
-        cos_trigger = make_trigger(f0, sr, dur, phase_deg=self.CROSSING_OFFSET)
-
+    def test_no_rising_crossings(self):
+        """A single falling step has no rising edge."""
+        trigger = np.r_[np.ones(500), np.zeros(500)]
         method = SynchronousAveraging(edge="rising")
-        sin_crossings = method._find_trigger_crossings(sin_trigger)
-        cos_crossings = method._find_trigger_crossings(cos_trigger)
+        with pytest.raises(ValueError, match="No rising edges"):
+            method._find_trigger_crossings(trigger)
 
-        np.testing.assert_allclose(sin_crossings, cos_crossings, atol=1)
+    def test_crossings_at_sub_sample_positions(self):
+        """Crossings are interpolated between samples."""
+        f0, sr, dur = 23.7, 10000.0, 1.0
+        edge_time = 0.00123
+        trigger = make_pulse_trigger(f0, sr, dur, edge_time=edge_time)
+        crossings = SynchronousAveraging()._find_trigger_crossings(trigger)
+        expected = (edge_time + np.arange(len(crossings)) / f0) * sr
+        np.testing.assert_allclose(crossings, expected, atol=1e-6)
 
     def test_average_recovers_cosine(self):
         """Averaged waveform should match the input cosine shape."""
         f0 = 25.0
         sr = 10000.0
         dur = 2.0
-        trigger = make_trigger(f0, sr, dur, phase_deg=self.CROSSING_OFFSET)
+        trigger = make_trigger(f0, sr, dur)
         signal = make_vibration(f0, 1.0, 0.0, sr, dur)
 
         method = SynchronousAveraging(edge="rising")
@@ -512,7 +535,7 @@ class TestSynchronousAveraging:
         f0 = 25.0
         sr = 10000.0
         dur = 2.0
-        trigger = make_trigger(f0, sr, dur, phase_deg=self.CROSSING_OFFSET)
+        trigger = make_trigger(f0, sr, dur)
         signal = make_vibration(f0, 1.0, 0.0, sr, dur)
 
         method = SynchronousAveraging(edge="rising")
@@ -526,7 +549,7 @@ class TestSynchronousAveraging:
         f0 = 25.0
         sr = 10000.0
         dur = 5.0
-        trigger = make_trigger(f0, sr, dur, phase_deg=self.CROSSING_OFFSET)
+        trigger = make_trigger(f0, sr, dur)
         signal = make_vibration(f0, 1.0, 0.0, sr, dur, noise_level=0.5, seed=42)
 
         method = SynchronousAveraging(edge="rising")
@@ -613,7 +636,7 @@ class TestSynchronousAveraging:
         amp = 2.0
         phase = 30.0
 
-        trigger = make_trigger(f0, sr, dur, phase_deg=self.CROSSING_OFFSET)
+        trigger = make_trigger(f0, sr, dur)
         signal = make_vibration(f0, amp, phase, sr, dur, noise_level=0.01)
 
         method = SynchronousAveraging(edge="rising")
@@ -628,7 +651,7 @@ class TestSynchronousAveraging:
         sr = 10000.0
         dur = 2.0
 
-        trigger = make_trigger(f0, sr, dur, phase_deg=self.CROSSING_OFFSET)
+        trigger = make_trigger(f0, sr, dur)
         signal = make_vibration(f0, 1.0, 0.0, sr, dur)
 
         method = SynchronousAveraging(edge="rising")
@@ -908,7 +931,7 @@ def _make_method_and_signals(method_cls, method_kwargs, trigger_phase_offset,
 @pytest.mark.parametrize("method_cls,method_kwargs,trigger_offset", [
     (IQDemodulation, {}, 0.0),
     (LeastSquaresFit, {}, 0.0),
-    (SynchronousAveraging, {"edge": "rising"}, SA_CROSSING_OFFSET),
+    (SynchronousAveraging, {"edge": "rising"}, 0.0),
     (FFTExtraction, {}, 0.0),
 ])
 class TestExtractionIntegration:
@@ -984,9 +1007,9 @@ class TestCrossMethodAgreement:
 
         signal = make_vibration(f0, amp, phase, sr, dur, noise_level=0.1)
 
-        # Each method needs its own trigger (SA requires crossing offset)
-        trigger_sa = make_trigger(f0, sr, dur, phase_deg=SA_CROSSING_OFFSET)
-        trigger_fft = make_trigger(f0, sr, dur)
+        # All methods use the same trigger and the same phase reference
+        trigger_sa = make_trigger(f0, sr, dur)
+        trigger_fft = trigger_sa
 
         iq_amp, iq_phase = IQDemodulation().extract(
             signal, trigger_fft, sr, f0,
@@ -1008,3 +1031,156 @@ class TestCrossMethodAgreement:
         # All phases should agree within 5 degrees
         for p in [iq_phase, ls_phase, sa_phase, fft_phase]:
             assert np.isclose(p, phase, atol=5.0)
+
+
+# ===========================================================================
+# 6. Phase reference: the trigger edge
+# ===========================================================================
+
+ALL_METHODS = [IQDemodulation, LeastSquaresFit, SynchronousAveraging,
+               FFTExtraction]
+
+
+class TestFindTriggerEdges:
+    """Tests for the shared sub-sample edge detector."""
+
+    def test_rising_and_falling(self):
+        f0, sr, dur = 23.7, 10000.0, 1.0
+        edge_time, width = 0.00123, 0.3
+        trigger = make_pulse_trigger(f0, sr, dur, edge_time=edge_time,
+                                     width=width)
+        rising = _find_trigger_edges(trigger, "rising")
+        falling = _find_trigger_edges(trigger, "falling")
+        np.testing.assert_allclose(
+            rising, (edge_time + np.arange(len(rising)) / f0) * sr, atol=1e-6)
+        first_fall = edge_time + width / f0
+        np.testing.assert_allclose(
+            falling, (first_fall + np.arange(len(falling)) / f0) * sr,
+            atol=1e-6)
+
+    def test_threshold_independent_of_levels(self):
+        """Offset and gain of the trigger do not move the edges."""
+        f0, sr, dur = 25.0, 10000.0, 1.0
+        trigger = make_pulse_trigger(f0, sr, dur, edge_time=0.0007, width=0.05)
+        np.testing.assert_allclose(_find_trigger_edges(trigger),
+                                   _find_trigger_edges(5.0 * trigger - 2.0))
+
+    @pytest.mark.parametrize("edge", ["rising", "falling"])
+    def test_hysteresis_suppresses_chatter(self, edge):
+        """Noise on slow edges gives no extra edges."""
+        f0, sr, dur = 25.0, 10000.0, 1.0
+        edge_time, width = 0.005, 0.5
+        trigger = make_pulse_trigger(f0, sr, dur, edge_time=edge_time,
+                                     width=width, rise_samples=40)
+        trigger = trigger + 0.05 * np.random.default_rng(0).standard_normal(
+            len(trigger))
+        # Plain midpoint crossings would chatter on every edge
+        above = trigger > 0.5
+        assert np.sum(~above[:-1] & above[1:]) > 2 * int(f0 * dur)
+        edges = _find_trigger_edges(trigger, edge)
+        assert len(edges) == int(f0 * dur)
+        first = edge_time if edge == "rising" else edge_time + width / f0
+        expected = (first + np.arange(len(edges)) / f0) * sr
+        # Noise of 5 % on a 40-sample edge moves single crossings by a few
+        # samples (about 2 samples standard deviation); they must stay on
+        # the right edge.
+        np.testing.assert_allclose(edges, expected, atol=6.0)
+
+    def test_min_spacing(self):
+        """Edges closer than min_spacing to the previous one are dropped."""
+        trigger = np.r_[np.zeros(10), np.ones(5), np.zeros(5), np.ones(10),
+                        np.zeros(30), np.ones(10)]
+        assert len(_find_trigger_edges(trigger)) == 3
+        np.testing.assert_allclose(_find_trigger_edges(trigger, min_spacing=20),
+                                   [9.5, 59.5])
+
+    def test_constant_trigger(self):
+        with pytest.raises(ValueError, match="constant"):
+            _find_trigger_edges(np.zeros(100))
+
+    def test_invalid_edge(self):
+        with pytest.raises(ValueError, match="edge must be"):
+            _find_trigger_edges(np.r_[0.0, 1.0], edge="both")
+
+    def test_edge_reference_phase(self):
+        """The reference cosine has its maxima on the trigger edges."""
+        f0, sr, dur = 23.7, 10000.0, 1.0
+        edge_time = 0.00123
+        trigger = make_pulse_trigger(f0, sr, dur, edge_time=edge_time)
+        ref = _edge_reference(trigger, sr, f0)
+        t = np.arange(len(trigger)) / sr
+        np.testing.assert_allclose(ref, np.cos(2 * np.pi * f0 * (t - edge_time)),
+                                   atol=1e-9)
+
+
+@pytest.mark.parametrize("method_cls", [IQDemodulation, LeastSquaresFit,
+                                        FFTExtraction])
+def test_invalid_edge_option(method_cls):
+    with pytest.raises(ValueError, match="edge must be"):
+        method_cls(edge="both")
+
+
+class TestPhaseReference:
+    """All methods measure the phase from the trigger edge (issue #10)."""
+
+    SR = 10000.0
+    DUR = 5.0
+
+    def _phases(self, signal, trigger, f0, edge="rising"):
+        return [m(edge=edge).extract(signal, trigger, self.SR, f0)
+                for m in ALL_METHODS]
+
+    @pytest.mark.parametrize("width", [0.02, 0.05, 0.2, 0.5, 0.8])
+    def test_independent_of_pulse_width(self, width):
+        """The phase does not depend on the duty cycle of the trigger."""
+        f0, amp, phase = 25.0, 3.4, 116.0
+        signal = make_vibration(f0, amp, phase, self.SR, self.DUR)
+        trigger = make_pulse_trigger(f0, self.SR, self.DUR, width=width)
+        for amp_out, phase_out in self._phases(signal, trigger, f0):
+            assert np.isclose(amp_out, amp, rtol=1e-3)
+            assert np.isclose(phase_out, phase, atol=0.05)
+
+    @pytest.mark.parametrize("f0, edge_time, phase", [
+        (25.0, 0.0, 30.0),
+        (23.7, 0.00123, -40.0),     # non-integer samples per revolution
+        (41.3, 0.0151, 170.0),
+    ])
+    def test_phase_from_edge(self, f0, edge_time, phase):
+        """A vibration cos(ω(t - t_edge) + φ) gives φ in every method."""
+        t = np.arange(0, self.DUR, 1 / self.SR)
+        signal = 2.0 * np.cos(2 * np.pi * f0 * (t - edge_time)
+                              + np.deg2rad(phase))
+        trigger = make_pulse_trigger(f0, self.SR, self.DUR,
+                                     edge_time=edge_time, width=0.1)
+        for amp_out, phase_out in self._phases(signal, trigger, f0):
+            assert np.isclose(amp_out, 2.0, rtol=1e-3)
+            diff = (phase_out - phase + 180.0) % 360.0 - 180.0
+            assert abs(diff) < 0.05
+
+    def test_falling_edge_of_inverted_pulse(self):
+        """An active-low pulse with edge='falling' gives the same phase."""
+        f0, phase = 25.0, 116.0
+        signal = make_vibration(f0, 3.4, phase, self.SR, self.DUR)
+        trigger = make_pulse_trigger(f0, self.SR, self.DUR, width=0.05,
+                                     inverted=True)
+        for _, phase_out in self._phases(signal, trigger, f0, edge="falling"):
+            assert np.isclose(phase_out, phase, atol=0.05)
+
+    def test_methods_agree_with_noise_and_harmonics(self):
+        """Noisy signal with 2x content and a noisy pulse trigger."""
+        f0, amp, phase = 23.7, 1.5, 250.0
+        t = np.arange(0, self.DUR, 1 / self.SR)
+        rng = np.random.default_rng(5)
+        signal = (amp * np.cos(2 * np.pi * f0 * t + np.deg2rad(phase))
+                  + 0.4 * np.cos(4 * np.pi * f0 * t + 1.0)
+                  + 0.2 * rng.standard_normal(len(t)))
+        trigger = make_pulse_trigger(f0, self.SR, self.DUR, width=0.05)
+        trigger = trigger + 0.02 * rng.standard_normal(len(t))
+        results = self._phases(signal, trigger, f0)
+        for amp_out, phase_out in results:
+            assert np.isclose(amp_out, amp, rtol=0.02)
+            diff = (phase_out - phase + 180.0) % 360.0 - 180.0
+            assert abs(diff) < 1.0
+        phases = np.array([p for _, p in results])
+        spread = np.ptp((phases - phases[0] + 180.0) % 360.0 - 180.0)
+        assert spread < 1.0

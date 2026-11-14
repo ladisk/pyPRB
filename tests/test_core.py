@@ -379,6 +379,27 @@ class TestMultiPlaneBalancing:
             assert np.isclose(r.amplitude, e.amplitude)
             assert np.isclose(r.phase, e.phase)
 
+    @pytest.mark.parametrize("vectors, mass, expected", [
+        # B&K example 4: 2.93 g @ 50.4°, 2.84 g @ -81.9°
+        ([(7.2, 238), (13.5, 296), (4.9, 114), (9.2, 347), (4, 79), (12, 292)],
+         2.5, [(2.93, 50.4), (2.84, -81.9)]),
+        # B&K example 5: 1.98 g @ 236.2°, 1.07 g @ 121.8°
+        ([(170, 112), (53, 78), (235, 94), (58, 68), (185, 115), (77, 104)],
+         1.15, [(1.98, 236.2 - 360), (1.07, 121.8)]),
+    ])
+    def test_BK_two_plane_examples(self, vectors, mass, expected):
+        """Two-plane B&K examples give the published compensation masses."""
+        V_1_0, V_2_0, V_1_1, V_2_1, V_1_2, V_2_2 = [
+            VibrationVector(a, p) for a, p in vectors]
+        comp = MultiPlaneBalancing(
+            [V_1_0, V_2_0],
+            [[V_1_1, V_2_1], [V_1_2, V_2_2]],
+            [MassVector(mass, 0.0), MassVector(mass, 0.0)],
+        ).compute_compensation(repr=False)
+        for m, (amp, phase) in zip(comp, expected):
+            assert np.isclose(m.amplitude, amp, atol=0, rtol=0.05)
+            assert np.isclose(m.phase, phase, atol=0, rtol=0.05)
+
     @pytest.mark.parametrize("n_planes", [3, 4, 6])
     def test_recovers_unbalance_square(self, n_planes):
         """N planes, N points: compensation cancels a known unbalance."""

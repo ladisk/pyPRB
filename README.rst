@@ -29,7 +29,8 @@ Features
   from the tolerance, and an assessment of a trial run (the "30 % or 30°"
   rule of thumb)
 * **VibrationExtractor**: Extracts vibration vectors from time-domain signals
-* **detect_rotation_freq**: Detects rotation frequency from a trigger signal
+* **detect_rotation_freq**: Detects rotation frequency from the edges of a trigger
+  signal (or, with ``method="fft"``, from its spectrum)
 * **Reading quality**: the 1× vector with its scatter over one record, the
   speed variation during the record (**rotation_freq_variation**) and the
   content at 1×, 2×, 3× against the overall level
@@ -411,6 +412,14 @@ Extracting Vibration Vectors from Measurements
     balancer = StaticBalancing(V_0, V_1, trial_mass=trial_mass)
     comp_mass = balancer.compute_compensation()
     # Output: Compensation mass: 2.01 g at position -30.8° on the rotor.
+
+**Phase reference.** All extraction methods measure the phase from the
+trigger edge (``edge="rising"`` by default, ``"falling"`` for an active-low
+probe): a response ``A·cos(θ + φ)``, where ``θ`` is the rotation angle
+counted from the edge, gives the vector ``A @ φ``. The edges are located with
+sub-sample resolution and hysteresis, so the phase does not depend on the
+pulse width or the signal levels of the trigger, and all four methods give
+the same phase.
 
 
 How Good Is the Reading?

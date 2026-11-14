@@ -44,7 +44,10 @@ class ExtractionMethod(Protocol):
         amplitude : float
             Peak amplitude of the fundamental (1×) component.
         phase_deg : float
-            Phase of the fundamental component in degrees.
+            Phase of the fundamental component in degrees, relative to
+            the trigger edge: a response ``A·cos(θ + φ)``, where ``θ`` is
+            the rotation angle measured from the trigger edge, gives
+            ``φ``.
         """
         ...
 
@@ -120,6 +123,146 @@ def _rfft(
     return freq, H
 
 
+_EDGES = ("rising", "falling")
+
+
+def _check_edge(edge: str) -> None:
+    """Raise ValueError if *edge* is not a valid trigger edge."""
+    if edge not in _EDGES:
+        raise ValueError(f"edge must be 'rising' or 'falling', got '{edge}'.")
+
+
+def _find_trigger_edges(
+    trigger: np.ndarray,
+    edge: str = "rising",
+    min_spacing: float | None = None,
+) -> np.ndarray:
+    """Locate trigger edges with sub-sample resolution.
+
+    The threshold is the midpoint between the minimum and the maximum of
+    the trigger, so the result does not depend on the pulse width or on
+    the signal levels.  The position of each edge is linearly
+    interpolated between the two samples on either side of the
+    threshold.  An edge is only accepted when the trigger moves all the
+    way from below 25 % to above 75 % of its range (or the reverse for a
+    falling edge); this hysteresis rejects extra crossings caused by
+    noise on a slow edge.  If noise makes the trigger cross the midpoint
+    several times within one edge, the mean of the first and the last
+    crossing is used.
+
+    Parameters
+    ----------
+    trigger : np.ndarray
+        Trigger signal (one pulse per revolution).
+    edge : str
+        ``'rising'`` (default) or ``'falling'``.
+    min_spacing : float, optional
+        Minimum distance between two edges in samples.  An edge closer
+        than this to the previously accepted edge is ignored, which
+        suppresses multiple crossings caused by noise on a slow edge.
+
+    Returns
+    -------
+    np.ndarray
+        Fractional sample positions of the edges.
+
+    Raises
+    ------
+    ValueError
+        If the trigger is constant or contains no edge of the given type.
+    """
+    _check_edge(edge)
+    trigger = np.asarray(trigger, dtype=float)
+    lo, hi = float(np.min(trigger)), float(np.max(trigger))
+    if not hi > lo:
+        raise ValueError("Trigger signal is constant; no edges found.")
+    threshold = 0.5 * (lo + hi)
+    if edge == "falling":
+        trigger = -trigger
+        threshold = -threshold
+        lo, hi = -hi, -lo
+    upper = lo + 0.75 * (hi - lo)
+    lower = lo + 0.25 * (hi - lo)
+
+    # Schmitt trigger: the state changes only when a band limit is passed.
+    is_high = trigger > upper
+    decided = is_high | (trigger < lower)
+    last = np.maximum.accumulate(np.where(decided, np.arange(len(trigger)), 0))
+    state = is_high[last] & decided[last]
+    switch_on = np.where(~state[:-1] & state[1:])[0] + 1   # first high sample
+
+    # Midpoint crossings (interpolated) inside each transition, i.e.
+    # between the last sample below the lower limit and the switch-on.
+    # With noise there can be several; the edge is the mean of the first
+    # and the last one.
+    above = trigger > threshold
+    idx = np.where(~above[:-1] & above[1:])[0]
+    x0 = trigger[idx]
+    x1 = trigger[idx + 1]
+    crossings = idx + (threshold - x0) / (x1 - x0)
+
+    last_low = np.maximum.accumulate(
+        np.where(trigger < lower, np.arange(len(trigger)), -1))
+    starts = last_low[switch_on]
+    valid = starts >= 0
+    first = np.searchsorted(idx, starts[valid])
+    last = np.searchsorted(idx, switch_on[valid]) - 1
+    ok = last >= first
+    if not np.any(ok):
+        raise ValueError(
+            f"No {edge} edges found in the trigger signal. "
+            "Check that the trigger channel contains a periodic pulse."
+        )
+    edges = 0.5 * (crossings[first[ok]] + crossings[last[ok]])
+
+    if min_spacing is not None and len(edges) > 1:
+        keep = [edges[0]]
+        for e in edges[1:]:
+            if e - keep[-1] >= min_spacing:
+                keep.append(e)
+        edges = np.array(keep)
+    return edges
+
+
+def _edge_reference(
+    trigger: np.ndarray,
+    sample_rate: float,
+    rotation_freq: float,
+    edge: str = "rising",
+) -> np.ndarray:
+    """Unit cosine at the rotation frequency with zero phase at the trigger edges.
+
+    The phase reference of all extraction methods is the trigger edge
+    (the datum mark passing the probe).  The reference phase is the
+    circular mean over all edges, which makes it robust to edge jitter.
+    Processing this reference in the same way as the response signal
+    and subtracting its phase gives the phase relative to the edge.
+
+    Parameters
+    ----------
+    trigger : np.ndarray
+        Trigger signal.
+    sample_rate : float
+        Sampling rate in Hz.
+    rotation_freq : float
+        Rotation frequency in Hz.
+    edge : str
+        ``'rising'`` (default) or ``'falling'``.
+
+    Returns
+    -------
+    np.ndarray
+        ``cos(ω (t - t_edge))`` with the same length as *trigger*.
+    """
+    samples_per_period = sample_rate / rotation_freq
+    edges = _find_trigger_edges(trigger, edge,
+                                min_spacing=0.5 * samples_per_period)
+    omega = 2 * np.pi / samples_per_period          # rad per sample
+    theta_0 = np.angle(np.mean(np.exp(1j * omega * edges)))
+    n = np.arange(len(trigger))
+    return np.cos(omega * n - theta_0)
+
+
 def _import_matplotlib():
     """Import matplotlib or raise a helpful error."""
     try:
@@ -132,50 +275,53 @@ def _import_matplotlib():
         ) from None
 
 
-def detect_rotation_freq(
+def _rotation_freq_from_edges(
     trigger: np.ndarray,
     sample_rate: float,
-    max_freq: float | None = None,
-    nfft_mult: int = 1,
-    plot: bool = False,
+    edge: str = "rising",
 ) -> float:
-    """Detect the rotation frequency from a trigger signal.
+    """Rotation frequency from the spacing of the trigger edges.
 
-    Computes a zero-padded FFT of *trigger* and returns the frequency
-    of the highest peak.
+    The edge positions are fitted with a straight line against the
+    revolution number (least squares), so a missing pulse does not bias
+    the result.
+    """
+    edges = _find_trigger_edges(trigger, edge)
+    if len(edges) < 2:
+        raise ValueError(
+            f"At least two {edge} edges are needed to detect the rotation "
+            f"frequency, found {len(edges)}. Provide a longer signal."
+        )
+    period_0 = float(np.median(np.diff(edges)))
+    revolution = np.round((edges - edges[0]) / period_0)
+    # Keep the first edge of each revolution (extra edges are not expected
+    # after the hysteresis, but are harmless here).
+    revolution, first = np.unique(revolution, return_index=True)
+    edges = edges[first]
+    if len(edges) < 2:
+        raise ValueError("Could not determine the trigger period.")
+    period = np.polyfit(revolution, edges, 1)[0]
+    return float(sample_rate / period)
 
-    Parameters
-    ----------
-    trigger : np.ndarray
-        Trigger signal from a photoelectric probe or similar sensor.
-    sample_rate : float
-        Sampling rate in Hz.
-    max_freq : float, optional
-        Upper frequency limit for the search in Hz.  If ``None``
-        (default), the entire spectrum is searched.
-    nfft_mult : int
-        Zero-padding multiplier for the FFT.  Higher values give finer
-        frequency resolution.  Default is 1 (no zero-padding).
-    plot : bool
-        If ``True``, show a diagnostic figure with the frequency
-        spectrum and a time-domain overlay of the detected sinusoid.
-        Requires matplotlib.
 
-    Returns
-    -------
-    float
-        Detected rotation frequency in Hz.
+def _rotation_freq_from_fft(
+    trigger: np.ndarray,
+    sample_rate: float,
+    max_freq: float | None,
+    nfft_mult: int,
+    subharmonic_ratio: float = 0.5,
+    max_subharmonic: int = 5,
+) -> tuple[float, np.ndarray, np.ndarray, int]:
+    """Rotation frequency from the spectrum of the trigger.
 
-    Raises
-    ------
-    ValueError
-        If no valid peak is found.
+    Finds the highest peak and then returns the lowest sub-harmonic
+    ``f_peak / k`` (``k <= max_subharmonic``) whose magnitude is at least
+    *subharmonic_ratio* of the peak.  For a short pulse the harmonics are
+    nearly as high as the fundamental, so the highest peak alone is
+    often a harmonic.
 
-    Examples
-    --------
-    >>> f0 = detect_rotation_freq(trigger_signal, sample_rate=10000)
-    >>> f0 = detect_rotation_freq(trigger_signal, sample_rate=10000,
-    ...                           max_freq=50.0, nfft_mult=256)
+    Returns the frequency, the frequency axis and the magnitudes of the
+    search range, and the index of the selected line in that range.
     """
     freq, H = _rfft(trigger, sample_rate, nfft_mult=nfft_mult, remove_dc=True)
 
@@ -189,14 +335,119 @@ def detect_rotation_freq(
             "Check sample_rate and max_freq."
         )
 
+    freq_m = freq[mask]
     magnitudes = np.abs(H[mask])
-    peak_idx = np.argmax(magnitudes)
-    f0 = float(freq[mask][peak_idx])
+    peak_idx = int(np.argmax(magnitudes))
+    peak = magnitudes[peak_idx]
+    df = freq_m[1] - freq_m[0] if len(freq_m) > 1 else freq_m[0]
+
+    selected = peak_idx
+    for k in range(max_subharmonic, 1, -1):
+        target = freq_m[peak_idx] / k
+        if target < freq_m[0] - df:
+            continue
+        centre = int(np.argmin(np.abs(freq_m - target)))
+        lo, hi = max(centre - 1, 0), min(centre + 2, len(freq_m))
+        local = lo + int(np.argmax(magnitudes[lo:hi]))
+        if magnitudes[local] >= subharmonic_ratio * peak:
+            selected = local
+            break
+    return float(freq_m[selected]), freq_m, magnitudes, selected
+
+
+def detect_rotation_freq(
+    trigger: np.ndarray,
+    sample_rate: float,
+    max_freq: float | None = None,
+    nfft_mult: int = 1,
+    plot: bool = False,
+    method: str = "edges",
+    edge: str = "rising",
+) -> float:
+    """Detect the rotation frequency from a trigger signal.
+
+    Two methods are available:
+
+    ``'edges'`` (default)
+        The trigger edges are located with sub-sample resolution and
+        hysteresis (as for the phase reference of the extraction
+        methods), and the period is the slope of a straight-line fit of
+        the edge positions against the revolution number.  The result
+        does not depend on the pulse width or on the FFT resolution.
+    ``'fft'``
+        The highest peak of the (optionally zero-padded) spectrum of
+        the trigger, replaced by its lowest sub-harmonic ``f/k``
+        (``k <= 5``) that reaches at least half of the peak.  For a
+        short pulse the harmonics are nearly as high as the
+        fundamental, so the highest peak alone is often a harmonic.
+
+    Parameters
+    ----------
+    trigger : np.ndarray
+        Trigger signal from a photoelectric probe or similar sensor
+        (one pulse per revolution).
+    sample_rate : float
+        Sampling rate in Hz.
+    max_freq : float, optional
+        Upper frequency limit in Hz.  With ``method='fft'`` the
+        spectrum is searched up to this frequency; with
+        ``method='edges'`` a result above it raises ``ValueError``.
+        If ``None`` (default), there is no limit.
+    nfft_mult : int
+        Zero-padding multiplier for the FFT (``method='fft'`` and the
+        plot).  Default is 1 (no zero-padding).
+    plot : bool
+        If ``True``, show a diagnostic figure with the frequency
+        spectrum and a time-domain overlay of the detected sinusoid.
+        Requires matplotlib.
+    method : str
+        ``'edges'`` (default) or ``'fft'``.
+    edge : str
+        Trigger edge used by ``method='edges'``: ``'rising'``
+        (default) or ``'falling'``.
+
+    Returns
+    -------
+    float
+        Detected rotation frequency in Hz.
+
+    Raises
+    ------
+    ValueError
+        If no valid edge or peak is found, or the result exceeds
+        *max_freq*.
+
+    Examples
+    --------
+    >>> f0 = detect_rotation_freq(trigger_signal, sample_rate=10000)
+    >>> f0 = detect_rotation_freq(trigger_signal, sample_rate=10000,
+    ...                           method='fft', max_freq=50.0, nfft_mult=256)
+    """
+    if method not in ("edges", "fft"):
+        raise ValueError(f"method must be 'edges' or 'fft', got '{method}'.")
+    _check_edge(edge)
+
+    if method == "edges":
+        f0 = _rotation_freq_from_edges(trigger, sample_rate, edge)
+        if max_freq is not None and f0 > max_freq:
+            raise ValueError(
+                f"Detected rotation frequency {f0:.4g} Hz exceeds "
+                f"max_freq={max_freq:g} Hz. Check the trigger signal."
+            )
+    else:
+        f0, _, _, _ = _rotation_freq_from_fft(trigger, sample_rate,
+                                              max_freq, nfft_mult)
 
     if plot:
-        peak_bin = H[mask][peak_idx]
-        _plot_rotation_freq(trigger, sample_rate, freq[mask], magnitudes,
-                            f0, peak_bin)
+        freq, H = _rfft(trigger, sample_rate, nfft_mult=nfft_mult,
+                        remove_dc=True)
+        mask = freq > 0
+        if max_freq is not None:
+            mask &= freq <= max(max_freq, f0)
+        freq_m, H_m = freq[mask], H[mask]
+        line = int(np.argmin(np.abs(freq_m - f0)))
+        _plot_rotation_freq(trigger, sample_rate, freq_m, np.abs(H_m),
+                            f0, H_m[line])
 
     return f0
 
@@ -295,7 +546,8 @@ def rotation_freq_variation(
     """Measure the rotation frequency and its variation over a record.
 
     The times of the once-per-revolution trigger edges are located (with
-    linear interpolation between samples) and the rotation frequency is
+    hysteresis and linear interpolation between samples, as for the
+    phase reference of the extraction methods) and the rotation frequency is
     computed for consecutive blocks of revolutions.  A balancing reading
     is only meaningful if the speed is steady during the record and the
     same in all runs.
@@ -340,26 +592,22 @@ def rotation_freq_variation(
     """
     if sample_rate <= 0:
         raise ValueError(f"sample_rate must be positive, got {sample_rate}.")
-    if edge not in ("rising", "falling"):
-        raise ValueError(f"edge must be 'rising' or 'falling', got {edge!r}.")
+    _check_edge(edge)
     if (not isinstance(revolutions_per_value, (int, np.integer))
             or revolutions_per_value < 1):
         raise ValueError(
             "revolutions_per_value must be a positive integer, got "
             f"{revolutions_per_value!r}.")
 
-    x = np.asarray(trigger, dtype=float)
-    if edge == "falling":
-        x = -x
-    threshold = 0.5 * (np.min(x) + np.max(x))
-    above = x > threshold
-    idx = np.where(~above[:-1] & above[1:])[0]
-    if len(idx) < revolutions_per_value + 1:
+    try:
+        edges = _find_trigger_edges(trigger, edge)
+    except ValueError:
+        edges = np.empty(0)
+    if len(edges) < revolutions_per_value + 1:
         raise ValueError(
-            f"Found {max(len(idx) - 1, 0)} whole revolutions in the trigger "
+            f"Found {max(len(edges) - 1, 0)} whole revolutions in the trigger "
             f"signal; at least {revolutions_per_value} are needed.")
-    fraction = (threshold - x[idx]) / (x[idx + 1] - x[idx])
-    times = (idx + fraction) / sample_rate
+    times = edges / sample_rate
 
     block_times = times[::revolutions_per_value]
     values = revolutions_per_value / np.diff(block_times)
@@ -578,7 +826,7 @@ class VibrationExtractor:
         >>> import numpy as np
         >>> from pyPRB import VibrationExtractor
         >>> t = np.arange(0, 4, 1 / 10000)
-        >>> trigger = np.cos(2 * np.pi * 25.0 * t)   # once-per-revolution
+        >>> trigger = np.sin(2 * np.pi * 25.0 * t)   # rising edge at t = 0
         >>> signal = 3.4 * np.cos(2 * np.pi * 25.0 * t + np.deg2rad(116))
         >>> extractor = VibrationExtractor(sample_rate=10000, rotation_freq=25.0)
         >>> scatter = extractor.get_vector_scatter(signal, trigger, n_parts=8)

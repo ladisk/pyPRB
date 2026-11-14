@@ -11,7 +11,8 @@ from __future__ import annotations
 
 import numpy as np
 
-from ._vibration_extractor import _import_matplotlib
+from ._vibration_extractor import (_check_edge, _edge_reference,
+                                   _import_matplotlib)
 
 
 class IQDemodulation:
@@ -23,9 +24,12 @@ class IQDemodulation:
     bandpass filter centred on the target frequency (bandwidth ≈ 1/T,
     where T is the averaging time).
 
-    The relative phase is obtained by performing the same demodulation
-    on the trigger signal and subtracting the trigger phase from the
-    signal phase.
+    The phase is measured from the trigger edge (the datum mark passing
+    the probe): the edges are located with sub-sample resolution, a unit
+    cosine with zero phase at the edges is demodulated in the same way
+    as the signal, and its phase is subtracted from the signal phase.
+    The result therefore does not depend on the pulse width of the
+    trigger.
 
     Parameters
     ----------
@@ -39,6 +43,9 @@ class IQDemodulation:
         number of complete periods before demodulation.  This
         eliminates spectral leakage from partial periods and ensures
         that the in-phase and quadrature averages are unbiased.
+    edge : str
+        Trigger edge used as the phase reference: ``'rising'`` (default)
+        or ``'falling'``.
     plotting : bool
         If ``True``, show a diagnostic figure during each call to
         :meth:`extract`.  Requires matplotlib
@@ -53,11 +60,11 @@ class IQDemodulation:
         Quadrature component of the signal demodulation from the last
         call to :meth:`extract`.
     I_trigger_ : float or None
-        In-phase component of the trigger demodulation from the last
-        call to :meth:`extract`.
+        In-phase component of the demodulated edge reference from the
+        last call to :meth:`extract`.
     Q_trigger_ : float or None
-        Quadrature component of the trigger demodulation from the last
-        call to :meth:`extract`.
+        Quadrature component of the demodulated edge reference from the
+        last call to :meth:`extract`.
     n_samples_used_ : int or None
         Number of samples used after optional trimming from the last
         call to :meth:`extract`.
@@ -74,9 +81,12 @@ class IQDemodulation:
         self,
         remove_dc: bool = True,
         trim_periods: bool = True,
+        edge: str = "rising",
         plotting: bool = False,
     ):
+        _check_edge(edge)
         self.remove_dc = remove_dc
+        self.edge = edge
         self.trim_periods = trim_periods
         self.plotting = plotting
 
@@ -114,7 +124,7 @@ class IQDemodulation:
             Peak amplitude at the rotation frequency.
         phase_deg : float
             Phase at the rotation frequency in degrees, relative to
-            the trigger signal.
+            the trigger edge.
 
         Raises
         ------
@@ -136,8 +146,10 @@ class IQDemodulation:
                 )
             n = int(round(n_periods * samples_per_period))
 
-        sig = signal[:n].copy()
-        trig = trigger[:n].copy()
+        reference = _edge_reference(trigger, sample_rate, rotation_freq,
+                                    self.edge)
+        sig = np.asarray(signal[:n], dtype=float).copy()
+        trig = reference[:n].copy()
 
         # Remove DC
         if self.remove_dc:
@@ -159,7 +171,7 @@ class IQDemodulation:
         amplitude = 2.0 * np.sqrt(I_sig**2 + Q_sig**2)
         sig_phase = np.arctan2(Q_sig, I_sig)
 
-        # IQ demodulation — trigger
+        # IQ demodulation — edge reference
         I_trig = float(np.mean(trig * cos_ref))
         Q_trig = float(-np.mean(trig * sin_ref))
         trig_phase = np.arctan2(Q_trig, I_trig)

@@ -1,25 +1,28 @@
 """FFT-based vibration extraction method.
 
-Extracts the vibration component at the rotation frequency by computing
-the FFT of both the response and trigger signals, then deriving
-relative phase by subtracting the trigger phase from the signal phase.
+Extracts the vibration component at the rotation frequency from the FFT
+of the response signal; the phase is measured from the trigger edge.
 """
 
 from __future__ import annotations
 
 import numpy as np
 
-from ._vibration_extractor import _rfft, _import_matplotlib, _WINDOWS
+from ._vibration_extractor import (_rfft, _import_matplotlib, _WINDOWS,
+                                   _check_edge, _edge_reference)
 
 
 class FFTExtraction:
     """Extracts the vibration component at the rotation frequency via FFT.
 
-    Computes the one-sided FFT of both the response signal and the
-    trigger signal, locates the spectral peak nearest to the expected
-    rotation frequency, and extracts amplitude and phase.  The relative
-    phase is obtained by subtracting the trigger phase from the signal
-    phase at the detected peak.
+    Computes the one-sided FFT of the response signal, locates the
+    spectral peak nearest to the expected rotation frequency, and
+    extracts amplitude and phase.  The phase is measured from the
+    trigger edge (the datum mark passing the probe): the edges are
+    located with sub-sample resolution, a unit cosine with zero phase at
+    the edges is transformed in the same way as the signal, and its
+    phase at the detected peak is subtracted from the signal phase.  The
+    result therefore does not depend on the pulse width of the trigger.
 
     A window function (controlled by *window*) is applied before the
     FFT to reduce spectral leakage.  Zero-padding (controlled by
@@ -40,6 +43,9 @@ class FFTExtraction:
         Window function to apply before the FFT.  Supported values are
         ``'hann'`` (default), ``'hamming'``, ``'bartlett'``, and
         ``'blackman'``.
+    edge : str
+        Trigger edge used as the phase reference: ``'rising'`` (default)
+        or ``'falling'``.
     plotting : bool
         If ``True``, show a diagnostic spectrum plot during each call
         to :meth:`extract`.  Requires matplotlib
@@ -52,7 +58,8 @@ class FFTExtraction:
     H_signal_ : np.ndarray or None
         Complex signal spectrum from the last call to :meth:`extract`.
     H_trigger_ : np.ndarray or None
-        Complex trigger spectrum from the last call to :meth:`extract`.
+        Complex spectrum of the edge reference from the last call to
+        :meth:`extract`.
     peak_idx_ : int or None
         Index of the detected peak in the spectrum arrays.
 
@@ -69,8 +76,10 @@ class FFTExtraction:
         nfft_mult: int = 4,
         freq_tolerance: float = 0.1,
         window: str = "hann",
+        edge: str = "rising",
         plotting: bool = False,
     ):
+        _check_edge(edge)
         if not isinstance(nfft_mult, int) or nfft_mult < 1:
             raise ValueError(
                 f"nfft_mult must be a positive integer, got {nfft_mult!r}."
@@ -88,6 +97,7 @@ class FFTExtraction:
         self.nfft_mult = nfft_mult
         self.freq_tolerance = freq_tolerance
         self.window = window
+        self.edge = edge
         self.plotting = plotting
         self.freq_: np.ndarray | None = None
         self.H_signal_: np.ndarray | None = None
@@ -121,14 +131,16 @@ class FFTExtraction:
             Peak amplitude at the rotation frequency.
         phase_deg : float
             Phase at the rotation frequency in degrees, relative to
-            the trigger signal.
+            the trigger edge.
         """
         freq, H_sig = _rfft(
             signal, sample_rate,
             nfft_mult=self.nfft_mult, remove_dc=True, window=self.window,
         )
+        reference = _edge_reference(trigger, sample_rate, rotation_freq,
+                                    self.edge)
         _, H_trig = _rfft(
-            trigger, sample_rate,
+            reference, sample_rate,
             nfft_mult=self.nfft_mult, remove_dc=True, window=self.window,
         )
 

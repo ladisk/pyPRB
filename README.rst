@@ -12,7 +12,8 @@ Features
 * **StaticBalancing**: Single-plane balancing for rotors
 * **DynamicBalancing**: Two-plane balancing for rotors
 * **VibrationExtractor**: Extracts vibration vectors from time-domain signals
-* **detect_rotation_freq**: Detects rotation frequency from a trigger signal
+* **detect_rotation_freq**: Detects rotation frequency from the edges of a trigger
+  signal (or, with ``method="fft"``, from its spectrum)
 * Four pluggable extraction methods: **IQDemodulation** (default),
   **LeastSquaresFit**, **SynchronousAveraging**, **FFTExtraction**
 

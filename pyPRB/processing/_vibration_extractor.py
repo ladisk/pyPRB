@@ -274,50 +274,53 @@ def _import_matplotlib():
         ) from None
 
 
-def detect_rotation_freq(
+def _rotation_freq_from_edges(
     trigger: np.ndarray,
     sample_rate: float,
-    max_freq: float | None = None,
-    nfft_mult: int = 1,
-    plot: bool = False,
+    edge: str = "rising",
 ) -> float:
-    """Detect the rotation frequency from a trigger signal.
+    """Rotation frequency from the spacing of the trigger edges.
 
-    Computes a zero-padded FFT of *trigger* and returns the frequency
-    of the highest peak.
+    The edge positions are fitted with a straight line against the
+    revolution number (least squares), so a missing pulse does not bias
+    the result.
+    """
+    edges = _find_trigger_edges(trigger, edge)
+    if len(edges) < 2:
+        raise ValueError(
+            f"At least two {edge} edges are needed to detect the rotation "
+            f"frequency, found {len(edges)}. Provide a longer signal."
+        )
+    period_0 = float(np.median(np.diff(edges)))
+    revolution = np.round((edges - edges[0]) / period_0)
+    # Keep the first edge of each revolution (extra edges are not expected
+    # after the hysteresis, but are harmless here).
+    revolution, first = np.unique(revolution, return_index=True)
+    edges = edges[first]
+    if len(edges) < 2:
+        raise ValueError("Could not determine the trigger period.")
+    period = np.polyfit(revolution, edges, 1)[0]
+    return float(sample_rate / period)
 
-    Parameters
-    ----------
-    trigger : np.ndarray
-        Trigger signal from a photoelectric probe or similar sensor.
-    sample_rate : float
-        Sampling rate in Hz.
-    max_freq : float, optional
-        Upper frequency limit for the search in Hz.  If ``None``
-        (default), the entire spectrum is searched.
-    nfft_mult : int
-        Zero-padding multiplier for the FFT.  Higher values give finer
-        frequency resolution.  Default is 1 (no zero-padding).
-    plot : bool
-        If ``True``, show a diagnostic figure with the frequency
-        spectrum and a time-domain overlay of the detected sinusoid.
-        Requires matplotlib.
 
-    Returns
-    -------
-    float
-        Detected rotation frequency in Hz.
+def _rotation_freq_from_fft(
+    trigger: np.ndarray,
+    sample_rate: float,
+    max_freq: float | None,
+    nfft_mult: int,
+    subharmonic_ratio: float = 0.5,
+    max_subharmonic: int = 5,
+) -> tuple[float, np.ndarray, np.ndarray, int]:
+    """Rotation frequency from the spectrum of the trigger.
 
-    Raises
-    ------
-    ValueError
-        If no valid peak is found.
+    Finds the highest peak and then returns the lowest sub-harmonic
+    ``f_peak / k`` (``k <= max_subharmonic``) whose magnitude is at least
+    *subharmonic_ratio* of the peak.  For a short pulse the harmonics are
+    nearly as high as the fundamental, so the highest peak alone is
+    often a harmonic.
 
-    Examples
-    --------
-    >>> f0 = detect_rotation_freq(trigger_signal, sample_rate=10000)
-    >>> f0 = detect_rotation_freq(trigger_signal, sample_rate=10000,
-    ...                           max_freq=50.0, nfft_mult=256)
+    Returns the frequency, the frequency axis and the magnitudes of the
+    search range, and the index of the selected line in that range.
     """
     freq, H = _rfft(trigger, sample_rate, nfft_mult=nfft_mult, remove_dc=True)
 
@@ -331,14 +334,119 @@ def detect_rotation_freq(
             "Check sample_rate and max_freq."
         )
 
+    freq_m = freq[mask]
     magnitudes = np.abs(H[mask])
-    peak_idx = np.argmax(magnitudes)
-    f0 = float(freq[mask][peak_idx])
+    peak_idx = int(np.argmax(magnitudes))
+    peak = magnitudes[peak_idx]
+    df = freq_m[1] - freq_m[0] if len(freq_m) > 1 else freq_m[0]
+
+    selected = peak_idx
+    for k in range(max_subharmonic, 1, -1):
+        target = freq_m[peak_idx] / k
+        if target < freq_m[0] - df:
+            continue
+        centre = int(np.argmin(np.abs(freq_m - target)))
+        lo, hi = max(centre - 1, 0), min(centre + 2, len(freq_m))
+        local = lo + int(np.argmax(magnitudes[lo:hi]))
+        if magnitudes[local] >= subharmonic_ratio * peak:
+            selected = local
+            break
+    return float(freq_m[selected]), freq_m, magnitudes, selected
+
+
+def detect_rotation_freq(
+    trigger: np.ndarray,
+    sample_rate: float,
+    max_freq: float | None = None,
+    nfft_mult: int = 1,
+    plot: bool = False,
+    method: str = "edges",
+    edge: str = "rising",
+) -> float:
+    """Detect the rotation frequency from a trigger signal.
+
+    Two methods are available:
+
+    ``'edges'`` (default)
+        The trigger edges are located with sub-sample resolution and
+        hysteresis (as for the phase reference of the extraction
+        methods), and the period is the slope of a straight-line fit of
+        the edge positions against the revolution number.  The result
+        does not depend on the pulse width or on the FFT resolution.
+    ``'fft'``
+        The highest peak of the (optionally zero-padded) spectrum of
+        the trigger, replaced by its lowest sub-harmonic ``f/k``
+        (``k <= 5``) that reaches at least half of the peak.  For a
+        short pulse the harmonics are nearly as high as the
+        fundamental, so the highest peak alone is often a harmonic.
+
+    Parameters
+    ----------
+    trigger : np.ndarray
+        Trigger signal from a photoelectric probe or similar sensor
+        (one pulse per revolution).
+    sample_rate : float
+        Sampling rate in Hz.
+    max_freq : float, optional
+        Upper frequency limit in Hz.  With ``method='fft'`` the
+        spectrum is searched up to this frequency; with
+        ``method='edges'`` a result above it raises ``ValueError``.
+        If ``None`` (default), there is no limit.
+    nfft_mult : int
+        Zero-padding multiplier for the FFT (``method='fft'`` and the
+        plot).  Default is 1 (no zero-padding).
+    plot : bool
+        If ``True``, show a diagnostic figure with the frequency
+        spectrum and a time-domain overlay of the detected sinusoid.
+        Requires matplotlib.
+    method : str
+        ``'edges'`` (default) or ``'fft'``.
+    edge : str
+        Trigger edge used by ``method='edges'``: ``'rising'``
+        (default) or ``'falling'``.
+
+    Returns
+    -------
+    float
+        Detected rotation frequency in Hz.
+
+    Raises
+    ------
+    ValueError
+        If no valid edge or peak is found, or the result exceeds
+        *max_freq*.
+
+    Examples
+    --------
+    >>> f0 = detect_rotation_freq(trigger_signal, sample_rate=10000)
+    >>> f0 = detect_rotation_freq(trigger_signal, sample_rate=10000,
+    ...                           method='fft', max_freq=50.0, nfft_mult=256)
+    """
+    if method not in ("edges", "fft"):
+        raise ValueError(f"method must be 'edges' or 'fft', got '{method}'.")
+    _check_edge(edge)
+
+    if method == "edges":
+        f0 = _rotation_freq_from_edges(trigger, sample_rate, edge)
+        if max_freq is not None and f0 > max_freq:
+            raise ValueError(
+                f"Detected rotation frequency {f0:.4g} Hz exceeds "
+                f"max_freq={max_freq:g} Hz. Check the trigger signal."
+            )
+    else:
+        f0, _, _, _ = _rotation_freq_from_fft(trigger, sample_rate,
+                                              max_freq, nfft_mult)
 
     if plot:
-        peak_bin = H[mask][peak_idx]
-        _plot_rotation_freq(trigger, sample_rate, freq[mask], magnitudes,
-                            f0, peak_bin)
+        freq, H = _rfft(trigger, sample_rate, nfft_mult=nfft_mult,
+                        remove_dc=True)
+        mask = freq > 0
+        if max_freq is not None:
+            mask &= freq <= max(max_freq, f0)
+        freq_m, H_m = freq[mask], H[mask]
+        line = int(np.argmin(np.abs(freq_m - f0)))
+        _plot_rotation_freq(trigger, sample_rate, freq_m, np.abs(H_m),
+                            f0, H_m[line])
 
     return f0
 

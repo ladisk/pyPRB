@@ -1,0 +1,53 @@
+name: Testing
+
+on: [push, pull_request]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.9", "3.10", "3.11", "3.12", "3.13", "3.14"]
+
+    steps:
+      - uses: actions/checkout@v7
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v7
+        with:
+          python-version: ${{ matrix.python-version }}
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install pytest matplotlib
+          pip install .
+      - name: Test with pytest
+        run: pytest
+      - name: Test the docstring examples
+        run: pytest --doctest-modules pyPRB
+      - name: Run the example scripts
+        env:
+          MPLBACKEND: Agg
+        run: |
+          mkdir -p "$RUNNER_TEMP/examples"
+          for f in examples/*_example.py; do
+            echo "::group::$f"
+            (cd "$RUNNER_TEMP/examples" && python "$GITHUB_WORKSPACE/$f")
+            echo "::endgroup::"
+          done
+
+  docs:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - name: Set up Python
+        uses: actions/setup-python@v7
+        with:
+          python-version: "3.13"
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install sphinx -r docs/requirements.txt
+          pip install .
+      - name: Build the documentation (warnings are errors)
+        run: python -m sphinx -b html -W docs/source docs/build/html

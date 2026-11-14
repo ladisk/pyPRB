@@ -4,10 +4,11 @@ build-backend = "hatchling.build"
 
 [project]
 name = "pyPRB"
-version = "1.0.0"
+version = "1.1.0"
 authors = [{name = "Gašper Krivic", email = "gasper.krivic@fs.uni-lj.si"}]
 maintainers = [{name = "Gašper Krivic", email = "gasper.krivic@fs.uni-lj.si"}]
 license = "MIT"
+license-files = ["License"]
 description = "Static and dynamic rotor balancing using portable measurement equipment calculations based on Brüel & Kjær guide."
 readme = "README.rst"
 keywords = ["rotor", "balancing", "vibration", "dynamics", "mechanical-engineering"]
@@ -30,7 +31,6 @@ classifiers = [
     "Programming Language :: Python :: 3.12",
     "Programming Language :: Python :: 3.13",
     "Programming Language :: Python :: 3.14",
-    "License :: OSI Approved :: MIT License",
 ]
 
 # Optional dependencies (can be installed with `pip install pyPRB[dev]`).
@@ -64,7 +64,7 @@ packages = ["pyPRB"]
 include = [
     "pyPRB/**/*.py",
     "README.rst",
-    "LICENSE",
+    "License",
     "requirements.txt",
 ]
 

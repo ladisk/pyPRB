@@ -1,8 +1,10 @@
 import numpy as np
 import pytest
 
-from pyPRB import (DynamicBalancing, MassVector, MultiPlaneBalancing,
-                   StaticBalancing, VibrationVector)
+import warnings
+
+from pyPRB import (DynamicBalancing, IllConditionedWarning, MassVector,
+                   MultiPlaneBalancing, StaticBalancing, VibrationVector)
 
 
 class TestVibrationVector:
@@ -545,3 +547,64 @@ class TestMultiPlaneBalancing:
                                         MassVector(1.0, 0.0)])
         with pytest.raises(ValueError, match="rank deficient"):
             balancer.compute_compensation(repr=False)
+
+
+class TestMultiPlaneConditioning:
+    """Warning for ill-conditioned influence coefficient matrices."""
+
+    @staticmethod
+    def _nearly_identical_planes(eps):
+        """Two planes whose effects on both points differ only by *eps*."""
+        alpha = np.array([[1.0, 1.0 + eps], [0.5j, 0.5j * (1.0 - eps)]])
+        trial_masses = [MassVector(1.0, 0.0), MassVector(1.0, 0.0)]
+        V_0, V_trial = _simulate_runs(alpha, np.array([1.0, 0.5j]),
+                                      trial_masses)
+        return V_0, V_trial, trial_masses
+
+    def test_condition_number(self):
+        V_0, V_trial, trial_masses = self._nearly_identical_planes(1e-3)
+        balancer = MultiPlaneBalancing(V_0, V_trial, trial_masses)
+        assert np.isclose(balancer.condition_number,
+                          np.linalg.cond(balancer.influence_coefficients))
+        assert balancer.condition_number > 1e3
+
+    def test_warns_and_points_to_caller(self):
+        """The warning is issued and attributed to the user's call."""
+        V_0, V_trial, trial_masses = self._nearly_identical_planes(1e-3)
+        balancer = MultiPlaneBalancing(V_0, V_trial, trial_masses)
+        with pytest.warns(IllConditionedWarning, match="ill-conditioned") as rec:
+            balancer.compute_compensation(repr=False)
+        assert rec[0].filename == __file__
+        with pytest.warns(IllConditionedWarning) as rec:
+            balancer.residual_vibration()
+        assert rec[0].filename == __file__
+
+    def test_no_warning_for_BK_example(self):
+        V = [VibrationVector(a, p) for a, p in
+             [(7.2, 238), (13.5, 296), (4.9, 114), (9.2, 347), (4, 79), (12, 292)]]
+        balancer = MultiPlaneBalancing([V[0], V[1]], [[V[2], V[3]], [V[4], V[5]]],
+                                       [MassVector(2.5, 0.0)] * 2)
+        assert balancer.condition_number < 10
+        with warnings.catch_warnings():
+            warnings.simplefilter("error")
+            balancer.compute_compensation(repr=False)
+
+    def test_limit_can_be_changed_or_disabled(self):
+        V_0, V_trial, trial_masses = self._nearly_identical_planes(1e-3)
+        cond = MultiPlaneBalancing(V_0, V_trial, trial_masses).condition_number
+        for limit in (None, 2 * cond):
+            with warnings.catch_warnings():
+                warnings.simplefilter("error")
+                MultiPlaneBalancing(V_0, V_trial, trial_masses,
+                                    max_condition_number=limit
+                                    ).compute_compensation(repr=False)
+        with pytest.warns(IllConditionedWarning):
+            MultiPlaneBalancing(V_0, V_trial, trial_masses,
+                                max_condition_number=0.5 * cond
+                                ).compute_compensation(repr=False)
+
+    def test_invalid_limit(self):
+        V = VibrationVector(1.0, 0.0)
+        with pytest.raises(ValueError, match="max_condition_number"):
+            MultiPlaneBalancing([V], [[VibrationVector(2.0, 0.0)]],
+                                [MassVector(1.0, 0.0)], max_condition_number=0)

@@ -54,6 +54,13 @@ MultiPlaneBalancing
    :show-inheritance:
 
 
+IllConditionedWarning
+---------------------
+
+.. autoclass:: pyPRB.IllConditionedWarning
+   :show-inheritance:
+
+
 Signal Processing
 =================
 

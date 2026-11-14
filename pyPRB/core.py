@@ -11,6 +11,8 @@ mark on the rotor, and positive angles are measured in the direction of
 rotation.
 """
 
+import warnings
+
 import numpy as np
 from tabulate import tabulate
 
@@ -486,6 +488,15 @@ class DynamicBalancing:
         return comp_1, comp_2
 
 
+class IllConditionedWarning(UserWarning):
+    """Warns that the influence coefficient matrix is ill-conditioned.
+
+    The correction planes are then hard to tell apart with the given
+    measurement points: small errors in the readings give large errors in
+    the computed masses.
+    """
+
+
 class MultiPlaneBalancing:
     """Performs multi-plane balancing with the influence coefficient method.
 
@@ -508,6 +519,11 @@ class MultiPlaneBalancing:
         Trial mass used in each correction plane (length ``N``), with
         amplitude (mass value) and phase (angular position on the rotor
         where it was mounted).
+    max_condition_number : float or None, optional
+        If the condition number of the influence coefficient matrix
+        exceeds this value, :class:`IllConditionedWarning` is issued when
+        the compensation is computed, by default 100.  ``None`` disables
+        the check.
 
     Notes
     -----
@@ -538,6 +554,16 @@ class MultiPlaneBalancing:
     Trial masses in all planes must use the same units. No unit conversion
     is performed.
 
+    The condition number (ratio of the largest to the smallest singular
+    value of the influence coefficient matrix) shows how well the
+    correction planes can be told apart: a relative error in the readings
+    can grow by up to this factor in the compensation masses.  It is high
+    when two planes have nearly the same effect on all measurement points,
+    for example planes close together or measurement points that do not
+    see the difference between them.  The default limit of 100 is a
+    pragmatic choice, not a published one; the condition number also
+    depends on the scaling of the measurement points.
+
     Examples
     --------
     Two-plane example 4 from the B&K application note:
@@ -556,7 +582,8 @@ class MultiPlaneBalancing:
     MassVector(amplitude=2.84414, phase=-81.8841°, units='g')
     """
 
-    def __init__(self, V_0, V_trial, trial_masses):
+    def __init__(self, V_0, V_trial, trial_masses,
+                 max_condition_number=100.0):
         V_0 = list(V_0)
         V_trial = [list(run) for run in V_trial]
         trial_masses = list(trial_masses)
@@ -586,9 +613,13 @@ class MultiPlaneBalancing:
                 f"Trial mass units must match: got {sorted(units)}. "
                 "No unit conversion is performed.")
 
+        if max_condition_number is not None and not max_condition_number > 0:
+            raise ValueError("max_condition_number must be positive or None.")
+
         self.V_0 = V_0
         self.V_trial = V_trial
         self.trial_masses = trial_masses
+        self.max_condition_number = max_condition_number
         self.n_planes = n_planes
         self.n_sensors = n_sensors
 
@@ -629,15 +660,38 @@ class MultiPlaneBalancing:
             alpha[:, j] = (V_j - V_0) / T_j
         return alpha
 
+    @property
+    def condition_number(self) -> float:
+        """Condition number of the influence coefficient matrix.
+
+        Ratio of the largest to the smallest singular value; ``inf`` if
+        the matrix is rank deficient.
+        """
+        return float(np.linalg.cond(self.influence_coefficients))
+
     def _solve(self) -> np.ndarray:
-        """Return compensation masses as complex numbers (length ``N``)."""
+        """Return compensation masses as complex numbers (length ``N``).
+
+        Raises ``ValueError`` if the matrix is rank deficient and warns
+        (:class:`IllConditionedWarning`) if it is ill-conditioned.  Must
+        be called directly from a public method, so that the warning
+        points to the user's call.
+        """
         alpha = self.influence_coefficients
         V_0 = np.array([v.complex_num for v in self.V_0])
-        W, _, rank, _ = np.linalg.lstsq(alpha, -V_0, rcond=None)
+        W, _, rank, sv = np.linalg.lstsq(alpha, -V_0, rcond=None)
         if rank < self.n_planes:
             raise ValueError(
                 "Influence coefficient matrix is rank deficient: the trial "
                 "runs do not distinguish all correction planes.")
+        cond = sv[0] / sv[-1]
+        if (self.max_condition_number is not None
+                and cond > self.max_condition_number):
+            warnings.warn(
+                f"Influence coefficient matrix is ill-conditioned (condition "
+                f"number {cond:.3g} > {self.max_condition_number:g}): small "
+                "errors in the readings give large errors in the masses.",
+                IllConditionedWarning, stacklevel=3)
         return W
 
     def compute_compensation(self, repr: bool = True) -> list:
@@ -653,6 +707,16 @@ class MultiPlaneBalancing:
         list of MassVector
             Compensating mass for each correction plane (length ``N``) with
             absolute angular position on the rotor.
+
+        Raises
+        ------
+        ValueError
+            If the influence coefficient matrix is rank deficient.
+
+        Warns
+        -----
+        IllConditionedWarning
+            If the condition number exceeds ``max_condition_number``.
         """
         W = self._solve()
         units = self.trial_masses[0].units
@@ -681,6 +745,11 @@ class MultiPlaneBalancing:
         -------
         list of VibrationVector
             Predicted vibration at each measurement point (length ``M``).
+
+        Warns
+        -----
+        IllConditionedWarning
+            If the condition number exceeds ``max_condition_number``.
         """
         V_0 = np.array([v.complex_num for v in self.V_0])
         residual = V_0 + self.influence_coefficients @ self._solve()
